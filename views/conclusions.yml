@@ -1,0 +1,54 @@
+# VIEWS PROJECT. Referencing a derived label is what makes its rules run, so each rule set ships
+# the small view that carries its conclusion to every surface — the app, an agent over MCP, the
+# SQL door, a question in words — with no client work.
+
+- name: HealthAtRiskAccounts
+  description: >-
+    The accounts that are AT RISK, and every reason why: owing money while waiting on support,
+    an open deal while a case is open, a failed payment, a renewal coming with a case open, a
+    very long open thread, high-priority cases, or being billed with no owner in the CRM. THE
+    answer for "which accounts are at risk", "which customers are in trouble", "why is
+    <customer> at risk" and "who needs attention". A reason that does not apply is null.
+  outputLabel: AtRiskAccountRow
+  params:
+    account:
+      type: string
+      default: ""
+      description: "Only this account, by company domain (e.g. wayne-ent.com). Empty = every account at risk."
+  cypher: |
+    MATCH (a:AtRiskAccount)
+    WITH a, a.accountKey AS key
+    WHERE $account = '' OR key = $account
+    RETURN a.accountKey AS accountKey, a.name AS account,
+           a.riskOwingAndWaiting AS owingAndWaiting, a.riskSellingIntoTrouble AS sellingIntoTrouble,
+           a.riskFailedPayments AS failedPayments, a.riskRenewsOn AS renewsOn,
+           a.riskLongestThread AS longestThread, a.riskHighPriorityCases AS highPriorityCases,
+           a.riskUnownedBilling AS billedWithNoOwner
+    ORDER BY coalesce(a.riskSellingIntoTrouble, 0) + coalesce(a.riskOwingAndWaiting, 0) DESC
+
+- name: HealthSharedIssues
+  description: >-
+    Pairs of accounts that each have an open support case in the SAME product area, with the
+    areas they share. THE answer for "is this one unhappy customer or an incident", "which
+    customers have the same problem" and "what else is affected by <area>".
+  outputLabel: SharedIssueRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[s:SHARES_ISSUE]->(b:CustomerAccount)
+    RETURN a.accountKey AS accountKey, a.name AS account, b.accountKey AS otherKey,
+           b.name AS otherAccount, s.shared AS shared, s.areas AS areas
+    ORDER BY shared DESC, account
+
+- name: HealthPossiblyWithheld
+  description: >-
+    Unpaid invoices on accounts that raised a still-open support case BEFORE the invoice fell
+    due — money collections should not chase without knowing about the problem. THE answer for
+    "are any customers withholding payment over a problem" and "which unpaid invoices are tied
+    to a support case". It shows the two facts and their order; it does not claim the customer
+    said so.
+  outputLabel: PossiblyWithheldRow
+  cypher: |
+    MATCH (i:BillingInvoice)-[w:POSSIBLY_WITHHELD_OVER]->(c:SupportCase)
+    RETURN c.accountKey AS accountKey, i.customerName AS customer, i.number AS invoice, w.owed AS owed, i.currency AS currency,
+           i.dueOn AS dueOn, c.subject AS caseSubject, w.openedOn AS caseOpenedOn,
+           c.id AS caseId, i.sourceUrl AS invoiceUrl
+    ORDER BY owed DESC

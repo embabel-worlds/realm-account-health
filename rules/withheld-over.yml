@@ -1,0 +1,36 @@
+# AN EDGE FROM AN INVOICE TO A CASE, that exists in no system. An unpaid invoice is tied to an
+# open support case on the same account when the case was raised BEFORE the invoice fell due
+# and is still open: the customer had a problem with us before we asked them for this money,
+# and still has it.
+#
+# It does NOT say they are withholding payment. It says collections should not call this
+# customer without knowing, and that the person best placed to get the invoice paid may be an
+# engineer. `POSSIBLY_` is in the name on purpose; a surface that wants the stronger claim reads
+# the case's thread (HealthCaseTriage) for whether the customer said so.
+#
+# Without the date test this would be a path ("same account") and the spec is right that a path
+# needs no rule. The conclusion is the ORDER of two events in two different systems.
+
+name: account-health/possibly-withheld-over
+derives: POSSIBLY_WITHHELD_OVER
+description: >-
+  An unpaid invoice and a still-open support case on the same account, where the case was opened
+  before the invoice's due date. `owed` is what the invoice still owes; `openedOn` when the case
+  was raised. Concluded across billing and the helpdesk; computed when asked, never stored.
+properties:
+  owed:     { type: number, description: "What the invoice still owes, in major units of its currency." }
+  openedOn: { type: string, description: "The day the case was raised." }
+maxPairs: 20000
+requires:
+  - materialize: "MATCH (a:CustomerAccount)-[:HAS_CASE]->(:SupportCase) RETURN 1"
+    description: "Each account's support cases."
+  - materialize: "MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(:BillingInvoice) RETURN 1"
+    description: "Each account's invoices."
+rules:
+  - derive: "(i)-[:POSSIBLY_WITHHELD_OVER {owed: owed, openedOn: openedOn}]->(c)"
+    from: |
+      MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+      WHERE i.paymentStatus <> 'succeeded' AND i.dueOn IS NOT NULL
+      MATCH (a)-[:HAS_CASE]->(c:SupportCase)
+      WHERE c.status IN ['open', 'pending'] AND c.openedOn IS NOT NULL AND c.openedOn <= i.dueOn
+      WITH i, c, i.amountDueCents / 100.0 AS owed, c.openedOn AS openedOn

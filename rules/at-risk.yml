@@ -1,0 +1,105 @@
+# RULES CONCLUDE. `AtRiskAccount` is one definition with many unordered clauses, each from a
+# different system, and that is the whole argument for a rule set over a view: as a view this
+# is a six-way OR that nobody can extend, and that cannot say WHICH arm was true for a given
+# account. As rules, each clause is independent; the firing chain records which fired for each
+# account and with what values ("at risk: payment failed; renews 24 Nov with a case open"); and
+# a fourth realm — a project tracker, say — can add "work we promised them is stuck" as a clause
+# from its OWN package, because two rule sets deriving one label are a union.
+#
+# EACH CLAUSE STAMPS ITS OWN PROPERTY. Two clauses writing one property is last-write-wins per
+# round, so a shared `reason` would show an account's last reason and lose the rest. A reader
+# gets every reason by reading every `risk*` property that is set.
+#
+# THE FACTS ARE FETCHED, so the rule set says which it needs. A rule body reads what the
+# transaction already holds and cannot fetch; cases, invoices, subscriptions and deals all live
+# in other systems. `requires:` walks each of them out from the accounts before the rules run.
+# Each demand is ONE chain: a demand that reached the same label two ways would let the second
+# walk be narrowed against the first's rows.
+#
+# An account is judged only once it IS an account — see realm-account-health's README on how a
+# company comes to be one. A company no system has keyed cannot be at risk here.
+
+name: account-health/at-risk
+derives: AtRiskAccount
+description: >-
+  A customer account with something wrong that somebody should act on, concluded across the
+  CRM, the helpdesk and billing. Every reason that holds is recorded as its own `risk*`
+  property, so "why is this account at risk" is read off the account and never guessed.
+  Computed when asked from the three systems as they stand; nothing is stored, so an account
+  leaves the label the moment its last reason stops being true.
+params:
+  renewalDays: { type: int, default: 120, description: "A renewal inside this many days, with a case open, is a risk." }
+  longThread:  { type: int, default: 15,  description: "An open case with at least this many replies is a risk on its own." }
+properties:
+  riskOwingAndWaiting: { type: number,  description: "Amount unpaid while a support case is open — possibly one conversation." }
+  riskSellingIntoTrouble: { type: number, description: "Open pipeline value while a support case is open." }
+  riskFailedPayments: { type: int,      description: "Invoices billing tried to collect and could not." }
+  riskRenewsOn:       { type: string,   description: "The next renewal date, when it falls inside the window and a case is open." }
+  riskLongestThread:  { type: int,      description: "Replies on the longest open case, when it has run past the threshold." }
+  riskHighPriorityCases: { type: int,   description: "Open cases marked high or urgent." }
+  riskUnownedBilling: { type: boolean,  description: "True when billing invoices this account and the CRM has no record of it." }
+requires:
+  - materialize: "MATCH (a:CustomerAccount)-[:HAS_CASE]->(:SupportCase) RETURN 1"
+    description: "Each account's support cases."
+  - materialize: "MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(:BillingInvoice) RETURN 1"
+    description: "Each account's invoices."
+  - materialize: "MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_SUBSCRIPTION]->(:BillingSubscription) RETURN 1"
+    description: "Each account's subscriptions."
+  - materialize: "MATCH (a:CustomerAccount)-[:TRACKED_AS]->(:CrmAccount)-[:HAS_OPPORTUNITY]->(:Opportunity) RETURN 1"
+    description: "Each account's deals."
+rules:
+  - derive: "(a:AtRiskAccount {riskOwingAndWaiting: owed})"
+    from: |
+      MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+      WHERE i.paymentStatus <> 'succeeded'
+      WITH a, sum(i.amountDueCents) / 100.0 AS owed
+      MATCH (a)-[:HAS_CASE]->(c:SupportCase)
+      WHERE c.status IN ['open', 'pending']
+      WITH a, owed, count(c) AS openCases
+      WHERE openCases > 0
+
+  - derive: "(a:AtRiskAccount {riskSellingIntoTrouble: pipeline})"
+    from: |
+      MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+      WHERE c.status IN ['open', 'pending']
+      WITH DISTINCT a
+      MATCH (a)-[:TRACKED_AS]->(:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)
+      WHERE o.won_status = 'pending'
+      WITH a, sum(o.expected_revenue) AS pipeline
+      WHERE pipeline > 0
+
+  - derive: "(a:AtRiskAccount {riskFailedPayments: failed})"
+    from: |
+      MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+      WHERE i.paymentStatus = 'failed'
+      WITH a, count(i) AS failed
+
+  - derive: "(a:AtRiskAccount {riskRenewsOn: renewsOn})"
+    from: |
+      MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+      WHERE c.status IN ['open', 'pending']
+      WITH DISTINCT a
+      MATCH (a)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription)
+      WHERE s.status = 'active' AND s.periodEndsOn IS NOT NULL
+        AND datetime(s.periodEndsOn) >= datetime()
+        AND datetime(s.periodEndsOn) <= datetime() + duration({days: $renewalDays})
+      WITH a, min(s.periodEndsOn) AS renewsOn
+
+  - derive: "(a:AtRiskAccount {riskLongestThread: replies})"
+    from: |
+      MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+      WHERE c.status IN ['open', 'pending'] AND c.replyCount >= $longThread
+      WITH a, max(c.replyCount) AS replies
+
+  - derive: "(a:AtRiskAccount {riskHighPriorityCases: n})"
+    from: |
+      MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+      WHERE c.status IN ['open', 'pending'] AND c.priority IN ['urgent', 'high']
+      WITH a, count(c) AS n
+
+  - derive: "(a:AtRiskAccount {riskUnownedBilling: true})"
+    from: |
+      MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)
+      OPTIONAL MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)
+      WITH a, count(k) AS crmRecords
+      WHERE crmRecords = 0

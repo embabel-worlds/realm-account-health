@@ -1,0 +1,74 @@
+# MODELS JUDGE. Two views where the answer is a reading of WORDS, which no query can give:
+# how much a problem is hurting the customer, and whether sales knows about it at all. Every
+# other cell in these rows is computed; the labels are the only model-made ones, and each
+# rubric is written out here because this file is where a reader checks what a label means.
+#
+# Both are MATERIALISED. A judgement costs a model call per row (the triage is ~30s cold) and
+# does not change until the words do, so the rows are kept for the `ttl` and an app reads them
+# instantly. "Now" for these two views means "as of the last time they ran".
+#
+# A model can be wrong, and these were checked against the sources by hand. The awareness
+# judge called Rekall unaware although its CRM notes say "Custom reporting needs" and its case
+# asks for a report builder; a literal word test got that one right and got others wrong. So a
+# surface should treat a customer as a blind spot only where BOTH tests agree — the Account
+# Signals app does — and should always show the notes themselves.
+
+- name: HealthCaseTriage
+  description: >-
+    Every open support case, judged from the customer's own words: IMPACT on their business
+    (blocked, degraded, inconvenienced, or merely asking for something) and their MOOD toward us
+    (frustrated, neutral, positive). THE answer for "which customers are really hurting", "which
+    support cases are serious", "who is frustrated with us" and "which open cases matter" — a
+    42-reply thread about dark mode is not trouble, and a 7-reply thread from a blocked customer
+    is. Cases with no message from the customer are absent: there is nothing to judge.
+  # No outputLabel, deliberately: on a MATERIALISED view an outputLabel means "cache member
+  # nodes", and a tabular body under it caches nothing and answers EMPTY. Without one the rows
+  # themselves are snapshotted, which is what a table of judgements is.
+  materialized: true
+  ttl: 6h
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    MATCH (c)-[:HAS_MESSAGE]->(m:SupportMessage)
+    WHERE m.messageType = 0
+    WITH a, c, collect(m.body)[0] AS said
+    RETURN a.accountKey AS accountKey, a.name AS account, c.id AS caseId, c.subject AS subject,
+           c.priority AS priority, c.replyCount AS replies, c.openedOn AS openedOn,
+           classify(said, 'blocked,degraded,inconvenienced,asking',
+             'Each item is what one business customer wrote when raising a support case about a software product. Judge how much the problem hurts THEIR business right now. blocked: something they rely on does not work and they have no workaround. degraded: it works badly or intermittently, or a workaround is costing them. inconvenienced: a nuisance or cosmetic fault. asking: a question, or a request for something that does not exist yet.') AS impact,
+           classify(said, 'frustrated,neutral,positive',
+             'Each item is what one business customer wrote when raising a support case. Judge the tone of the writer toward the vendor from the words actually used, not from how serious the problem is.') AS mood
+    ORDER BY replies DESC
+
+- name: HealthCrmAwareness
+  description: >-
+    For every account with an open support case that the CRM tracks: does ANYTHING sales has
+    written — on the company, its deals or its people — touch the topic of what support is
+    dealing with? `aware` or `unaware`, judged by a model from the notes and the case subjects.
+    THE answer for "does sales know about this customer's problem", "which open cases are not
+    reflected in the CRM" and "where is sales blind". One opinion: check it against the notes.
+  # No outputLabel, deliberately: on a MATERIALISED view an outputLabel means "cache member
+  # nodes", and a tabular body under it caches nothing and answers EMPTY. Without one the rows
+  # themselves are snapshotted, which is what a table of judgements is.
+  materialized: true
+  ttl: 6h
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    WITH a, collect(c.subject) AS subjects, count(c) AS openCases
+    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)
+    OPTIONAL MATCH (k)-[:HAS_NOTE]->(n1:AccountNote)
+    WITH a, k, subjects, openCases, collect(DISTINCT n1.body) AS onCompany
+    OPTIONAL MATCH (k)-[:HAS_OPPORTUNITY]->(o:Opportunity)-[:HAS_NOTE]->(n2:AccountNote)
+    WITH a, k, subjects, openCases, onCompany, collect(DISTINCT n2.body) AS onDeals
+    OPTIONAL MATCH (k)-[:HAS_ACCOUNT_CONTACT]->(p:AccountContact)-[:HAS_NOTE]->(n3:AccountNote)
+    WITH a, subjects, openCases, onCompany, onDeals, collect(DISTINCT n3.body) AS onContacts
+    WITH a, subjects, openCases, onCompany + onDeals + onContacts AS notes
+    WITH a, subjects, openCases, size(notes) AS noteCount,
+         reduce(s = '', x IN subjects | s + ' | ' + x) AS problems,
+         reduce(s = '', x IN notes | s + ' | ' + coalesce(x, '')) AS written
+    RETURN a.accountKey AS accountKey, a.name AS account, openCases, noteCount, subjects,
+           classify('OPEN SUPPORT PROBLEMS: ' + problems + '  ||  WHAT SALES HAS WRITTEN IN THE CRM: ' + CASE WHEN written = '' THEN '(nothing)' ELSE written END,
+             'aware,unaware',
+             'Each item lists what a customer has open with SUPPORT, then everything SALES has written about that customer in the CRM (HTML tags are noise). Decide whether sales knows about the topic. aware: any CRM note touches the SAME TOPIC as any support item, in any words - for example a support item about data residency and a note saying the customer is concerned about GDPR or data residency, or a support item asking for a report builder and a note about custom reporting needs. unaware: no note touches any of the support topics; the notes are only about deals, renewals, stakeholders or the company in general.') AS crmAwareness
+    ORDER BY account

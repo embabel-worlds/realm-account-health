@@ -37,6 +37,17 @@
 - question: "How much pipeline do we have with each account?"
   expect: { nonEmpty: true }
 
+# The rule set, asked for in words. `rows` pins the COUNT to the view's: the label is concluded
+# when asked, so this also proves a question in words triggers the rules.
+- question: "Which accounts are at risk?"
+  expect: { rows: HealthAtRiskAccounts }
+- question: "Which customers are in trouble?"
+  expect: { rows: HealthAtRiskAccounts }
+- question: "Which customers have the same problem open?"
+  expect: { rows: HealthSharedIssues }
+- question: "Which support cases are really hurting the customer?"
+  expect: { nonEmpty: true }
+
 # ── What this realm CANNOT answer. Asked several times each: generation is stochastic, and a
 # fabrication that shows one run in five is still a fabrication. The honest result is no rows.
 # KNOWN LIMIT: the ask surface answers "no rows" and not "this cannot be known", so a reader

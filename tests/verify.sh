@@ -37,7 +37,8 @@ print("== L1: every view answers by name ==")
 NAMES = ["HealthOpenCasesByAccount", "HealthResolvedCasesByAccount", "HealthReceivablesByAccount", "HealthBillingByAccount",
          "HealthRecurringByAccount", "HealthPipelineByAccount", "HealthCrmRecordByAccount", "HealthCompanyNotesForOpenCases",
          "HealthDealNotesForOpenCases", "HealthContactNotesForOpenCases", "HealthSellingIntoTrouble", "HealthOwingAndWaiting",
-         "HealthRevenueBehindCases", "HealthBilledButUnknownToCrm"]
+         "HealthRevenueBehindCases", "HealthBilledButUnknownToCrm",
+         "HealthAtRiskAccounts", "HealthSharedIssues", "HealthPossiblyWithheld", "HealthCaseTriage", "HealthCrmAwareness"]
 V = {n: view(n) for n in NAMES}
 for n in NAMES: print("  ok   %-34s %d rows" % (n, len(V[n])))
 for n in ("HealthOpenCasesByAccount", "HealthBillingByAccount", "HealthCrmRecordByAccount"):
@@ -60,6 +61,36 @@ for r in V["HealthSellingIntoTrouble"]:
     check("pipeline for %s, both ways" % r["accountKey"], pipe[r["accountKey"]]["openPipeline"], r["openPipeline"])
 for r in V["HealthOwingAndWaiting"]:
     check("owed by %s, both ways" % r["accountKey"], owed[r["accountKey"]]["owed"], r["owed"])
+
+print("== L2b: the RULES conclude what the facts say ==")
+# Each clause of rules/at-risk.yml, recomputed here from the fact views. A rule set is only as
+# good as the facts it was given, and its `requires:` demands are what give it them: a clause
+# that silently concluded over an unfetched system would be short here.
+risk = {r["accountKey"]: r for r in V["HealthAtRiskAccounts"]}
+def having(col): return sorted(k for k, r in risk.items() if r.get(col) is not None)
+check("rule: owing and waiting", sorted(set(cases) & set(owed)), having("owingAndWaiting"))
+check("rule: selling into trouble", sorted(k for k in cases if pipe.get(k, {}).get("openPipeline", 0) > 0), having("sellingIntoTrouble"))
+check("rule: failed payments", sorted(k for k, r in owed.items() if r["failedInvoices"] > 0), having("failedPayments"))
+check("rule: billed with no owner", sorted(billed - crm), having("billedWithNoOwner"))
+check("rule: high-priority cases", sorted(k for k, r in cases.items() if r["highPriority"] > 0), having("highPriorityCases"))
+check("rule: long threads (>= 15 replies)", sorted(k for k, r in cases.items() if (r["longestThread"] or 0) >= 15), having("longestThread"))
+for r in V["HealthAtRiskAccounts"]:
+    if r.get("sellingIntoTrouble") is not None:
+        check("rule value: pipeline for %s" % r["accountKey"], pipe[r["accountKey"]]["openPipeline"], r["sellingIntoTrouble"])
+# A derived edge is between two DIFFERENT accounts that both have an open case, once per pair.
+pairs = [(r["accountKey"], r["otherKey"]) for r in V["HealthSharedIssues"]]
+check("shared issue: both ends have an open case", True, all(a in cases and b in cases for a, b in pairs))
+check("shared issue: each pair once, never an account with itself", True, len(set(pairs)) == len(pairs) and all(a < b for a, b in pairs))
+check("possibly withheld: only accounts that owe AND wait", True, set(r["accountKey"] for r in V["HealthPossiblyWithheld"]) <= (set(cases) & set(owed)))
+
+print("== L2c: the JUDGEMENTS are stable, and legal ==")
+# A materialised judgement must be the SAME judgement on the next read — that is what it is
+# materialised for. (It was not, until the host could see its own cache: embabel/me#1354.)
+again = view("HealthCaseTriage")
+check("case triage is the same on a second read", V["HealthCaseTriage"], again)
+check("impact is one of the four words", True, all(r["impact"] in ("blocked", "degraded", "inconvenienced", "asking") for r in again))
+check("mood is one of the three words", True, all(r["mood"] in ("frustrated", "neutral", "positive") for r in again))
+check("awareness is one of the two words", True, all(r["crmAwareness"] in ("aware", "unaware") for r in V["HealthCrmAwareness"]))
 
 print("== L3: the app is served ==")
 code = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-u", auth, base + "/apps/account-health/account-signals.html"],

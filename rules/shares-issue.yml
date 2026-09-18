@@ -1,0 +1,39 @@
+# AN EDGE WHOSE EXISTENCE IS A CONCLUSION. No system records that two customers have the same
+# thing wrong; each helpdesk ticket is about one. Two accounts are related when each has an
+# open case in the same product AREA — the `area-*` label the desk puts on a conversation —
+# and `shared` counts how many areas they have in common.
+#
+# It turns "Wayne has a Slack problem" into "three customers, 1.4M of pipeline between them, all
+# have an integrations problem open": one unhappy customer, or an incident. A view cannot say
+# that without a self-join over every pair of cases written out by hand in every query that
+# wants it; as a relationship it is traversed like any other, by any surface.
+#
+# `a.accountKey < b.accountKey` is load-bearing. Without it the body binds every pair twice and
+# every account to itself — quadratic, and the first thing `maxPairs` exists to refuse.
+
+name: account-health/shares-issue
+derives: SHARES_ISSUE
+description: >-
+  Two customer accounts each have an open support case in the same product area. `areas` lists
+  the areas they share and `shared` counts them. Concluded from the helpdesk's own `area-*`
+  labels on open conversations; computed when asked, never stored.
+properties:
+  shared: { type: int, description: "How many product areas the two accounts both have an open case in." }
+  areas:  { type: any, description: "The shared product areas, as the helpdesk labels them." }
+maxPairs: 5000
+requires:
+  - materialize: "MATCH (a:CustomerAccount)-[:HAS_CASE]->(:SupportCase) RETURN 1"
+    description: "Each account's support cases."
+rules:
+  - derive: "(a)-[:SHARES_ISSUE {shared: n, areas: areas}]->(b)"
+    from: |
+      MATCH (a:CustomerAccount)-[:HAS_CASE]->(ca:SupportCase)
+      WHERE ca.status IN ['open', 'pending']
+      UNWIND ca.labels AS area
+      WITH a, area WHERE area STARTS WITH 'area-'
+      WITH DISTINCT a, area
+      MATCH (b:CustomerAccount)-[:HAS_CASE]->(cb:SupportCase)
+      WHERE cb.status IN ['open', 'pending'] AND a.accountKey < b.accountKey AND area IN cb.labels
+      WITH a, b, collect(DISTINCT area) AS areas
+      WITH a, b, areas, size(areas) AS n
+      WHERE n >= 1
