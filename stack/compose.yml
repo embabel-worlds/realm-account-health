@@ -1,0 +1,19 @@
+# The whole demo estate as ONE Compose project: a CRM, a support desk and a billing
+# system that have never heard of each other. This file owns no containers. Each system's
+# realm carries its own stack beside its own seeder and tests, and is pulled in here — so
+# swapping a system is choosing a different realm, and nothing in this file knows what a
+# Chatwoot is.
+#
+#   SUPPORT=zammad ./up.sh        # once realm-zammad exists beside this realm
+#
+# Run it through ./up.sh rather than by hand: the script checks the sibling realms are
+# present and prints where everything landed. Start order needs no instructions — every
+# included file declares its own with depends_on and health checks, and the three systems
+# are independent of one another.
+
+name: account-health-demo
+
+include:
+  - path: ../../realm-${CRM:-odoo}/stack/compose.yml
+  - path: ../../realm-${SUPPORT:-chatwoot}/stack/compose.yml
+  - path: ../../realm-${BILLING:-lago}/stack/compose.yml

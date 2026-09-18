@@ -1,0 +1,15 @@
+name: account-health
+description: >-
+  Which customers are in trouble, and what the CRM does not know about them — read across a
+  CRM, a helpdesk and a billing system through the business vocabulary, naming no product. NOT
+  A LOADABLE REALM YET — today this holds only `stack/`: one command that brings up the three
+  products (whichever realm fills each slot) and one that loads a book into them. Views,
+  rules, questions and apps come once the product realms exist.
+version: 0.0.1
+# Not ready to be offered: there is nothing here for a world to load yet.
+maturity: experimental
+author: Rod Johnson
+tags:
+  - crm
+  - support
+  - billing
