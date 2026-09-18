@@ -1,0 +1,241 @@
+# Two kinds of view, and the split is deliberate.
+#
+# FACTS PER ACCOUNT (the first group): one fact about every account that has it, keyed by
+# `accountKey`. Each is a single MATCH chain from the CustomerAccount spine through ONE
+# system. A surface composes them by accountKey — that is how the Account Signals app builds
+# every signal it shows, including the ones that need an ABSENCE ("no open case", "nothing
+# written since"), which one query cannot yet say reliably: a multi-hop OPTIONAL MATCH in a
+# later stage reads as null, silently (embabel/me#1348). A fact view either has a row for
+# an account or does not, and that is an absence nobody has to trust an engine about.
+#
+# CONJUNCTIONS (the second group): the Bad things that ARE one honest query, for a caller
+# who is not the app — a question asked in words, an agent over MCP. Each is "accounts with
+# this AND that", written as plain MATCH stages, every one run against the live systems.
+#
+# No view names a product. Every view name carries the prefix because view names resolve
+# globally across realms. Money is in major units of `currency`; NEVER add across currencies.
+
+# ── Facts per account ─────────────────────────────────────────────────────────────────────
+
+- name: HealthOpenCasesByAccount
+  description: >-
+    Per account: the support cases a customer is still waiting on — how many, how many are
+    high priority or urgent, the longest back-and-forth, when the oldest was opened, and what
+    they are about. THE answer for "which customers have open support cases" and "who is
+    waiting on us". An account absent from this list has nothing open.
+  outputLabel: AccountOpenCasesRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS openCases,
+           sum(CASE WHEN c.priority IN ['urgent', 'high'] THEN 1 ELSE 0 END) AS highPriority,
+           max(c.replyCount) AS longestThread, min(c.openedOn) AS firstOpened,
+           collect(c.subject) AS subjects, collect(c.id) AS caseIds
+    ORDER BY openCases DESC, longestThread DESC
+
+- name: HealthResolvedCasesByAccount
+  description: >-
+    Per account: the support cases that have been RESOLVED — how many, when the latest was
+    closed, and what they were about. THE answer for "what have we fixed for <customer>" and
+    "who have we recently helped".
+  outputLabel: AccountResolvedCasesRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status = 'resolved'
+    RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS resolvedCases,
+           max(c.closedOn) AS lastResolved, collect(c.subject) AS subjects
+    ORDER BY lastResolved DESC
+
+- name: HealthReceivablesByAccount
+  description: >-
+    Per account, MOST OWED FIRST: what is owed and not collected — the amount, unpaid invoices
+    counted, how many FAILED collection, and links to the invoices. THE answer for "which
+    accounts owe us the most", "which accounts owe us money", "who owes us the most money" and
+    "who has a failed payment". "The most" means the largest AMOUNT, never the most invoices.
+    An account absent from this list owes nothing.
+  outputLabel: AccountReceivablesRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+    WHERE i.paymentStatus <> 'succeeded'
+    RETURN a.accountKey AS accountKey, a.name AS account, i.currency AS currency,
+           count(i) AS unpaidInvoices,
+           sum(CASE WHEN i.paymentStatus = 'failed' THEN 1 ELSE 0 END) AS failedInvoices,
+           sum(i.amountDueCents) / 100.0 AS owed,
+           collect(i.number) AS invoices, collect(i.sourceUrl) AS invoiceUrls
+    ORDER BY owed DESC
+
+- name: HealthBillingByAccount
+  description: >-
+    Per account: every invoice billing has issued them, and how many were paid. THE answer for
+    "is <customer> a good payer" and the way to tell a billed account from one billing has
+    never heard of. An account absent from this list is not billed.
+  outputLabel: AccountBillingRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+    RETURN a.accountKey AS accountKey, a.name AS account, i.currency AS currency,
+           count(i) AS invoices,
+           sum(CASE WHEN i.paymentStatus = 'succeeded' THEN 1 ELSE 0 END) AS paidInvoices
+    ORDER BY invoices DESC
+
+- name: HealthRecurringByAccount
+  description: >-
+    Per account: what they pay on a schedule — active subscriptions, the amount per billing
+    period, what the products are, and when the next one renews. THE answer for "how much is
+    <customer> worth to us", "who are our biggest customers" and "who renews soon". Amounts are
+    per billing period as the plan defines it; do not annualize them.
+  outputLabel: AccountRecurringRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription)
+    WHERE s.status = 'active'
+    RETURN a.accountKey AS accountKey, a.name AS account, s.currency AS currency,
+           count(s) AS activeSubscriptions, sum(s.amountCents) / 100.0 AS perPeriod,
+           min(s.periodEndsOn) AS nextRenewal, collect(s.product) AS products
+    ORDER BY perPeriod DESC
+
+- name: HealthPipelineByAccount
+  description: >-
+    Per account: the deals sales has with them — open pipeline value, the open deals by name,
+    when the next is due to close, and how many were won and lost. THE answer for "what are we
+    trying to sell <customer>" and "how much pipeline do we have with <customer>". An account
+    absent from this list has no deal in the CRM, open or closed.
+  outputLabel: AccountPipelineRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)
+    RETURN a.accountKey AS accountKey, a.name AS account,
+           sum(CASE WHEN o.won_status = 'pending' THEN o.expected_revenue ELSE 0 END) AS openPipeline,
+           sum(CASE WHEN o.won_status = 'pending' THEN 1 ELSE 0 END) AS openDeals,
+           sum(CASE WHEN o.won_status = 'won' THEN 1 ELSE 0 END) AS wonDeals,
+           sum(CASE WHEN o.won_status = 'lost' THEN 1 ELSE 0 END) AS lostDeals,
+           collect(CASE WHEN o.won_status = 'pending' THEN o.name END) AS openDealNames,
+           min(CASE WHEN o.won_status = 'pending' THEN o.date_deadline END) AS nextClose
+    ORDER BY openPipeline DESC
+
+- name: HealthCrmRecordByAccount
+  description: >-
+    Per account: the CRM's own record of it. THE way to tell an account sales knows from one it
+    does not: an account absent from this list has no record in the CRM at all, however much
+    it is billed or however many cases it has open.
+  outputLabel: AccountCrmRecordRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k:CrmAccount)
+    RETURN a.accountKey AS accountKey, a.name AS account, k.id AS crmId, k.website AS website
+    ORDER BY account
+
+# What the CRM's people WROTE DOWN about the accounts that have a case open — the text, so a
+# reader can set what support is dealing with beside what sales believes. Three views and not
+# one: a note may sit on the company, on a deal or on a person, and one query over all three is
+# the shape #1348 breaks. Restricted to accounts with an open case because that is the question
+# ("does anyone in the CRM know?"), and it keeps the read to a handful of accounts.
+- name: HealthCompanyNotesForOpenCases
+  description: >-
+    For every account with an open support case: the notes on the company's own CRM record,
+    with their text and date. Part of "does the CRM know about this customer's problem".
+  outputLabel: OpenCaseCompanyNoteRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    WITH DISTINCT a
+    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_NOTE]->(n:AccountNote)
+    RETURN a.accountKey AS accountKey, 'the company' AS writtenOn, k.name AS subject,
+           n.date AS date, n.body AS body
+    ORDER BY date DESC
+
+- name: HealthDealNotesForOpenCases
+  description: >-
+    For every account with an open support case: the notes on its DEALS in the CRM, with their
+    text, date and the deal they are on.
+  outputLabel: OpenCaseDealNoteRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    WITH DISTINCT a
+    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)-[:HAS_NOTE]->(n:AccountNote)
+    RETURN a.accountKey AS accountKey, 'a deal' AS writtenOn, o.name AS subject,
+           n.date AS date, n.body AS body
+    ORDER BY date DESC
+
+- name: HealthContactNotesForOpenCases
+  description: >-
+    For every account with an open support case: the notes on the PEOPLE the CRM knows there,
+    with their text, date and who they are about.
+  outputLabel: OpenCaseContactNoteRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    WITH DISTINCT a
+    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_ACCOUNT_CONTACT]->(p:AccountContact)-[:HAS_NOTE]->(n:AccountNote)
+    RETURN a.accountKey AS accountKey, 'a contact' AS writtenOn, p.name AS subject,
+           n.date AS date, n.body AS body
+    ORDER BY date DESC
+
+# ── Conjunctions: Bad things that are one honest query ─────────────────────────────────────
+
+- name: HealthSellingIntoTrouble
+  description: >-
+    Accounts where sales has an OPEN DEAL and the customer has an OPEN SUPPORT CASE, largest
+    deal first — with the longest thread and what it is about. THE answer for "are we about to
+    pitch an unhappy customer", "which deals are at risk from support problems" and "what
+    should sales know before the next call".
+  outputLabel: SellingIntoTroubleRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    WITH a, count(c) AS openCases, max(c.replyCount) AS longestThread, collect(c.subject) AS subjects
+    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)
+    WHERE o.won_status = 'pending'
+    RETURN a.accountKey AS accountKey, a.name AS account, openCases, longestThread, subjects,
+           sum(o.expected_revenue) AS openPipeline, collect(o.name) AS deals
+    ORDER BY openPipeline DESC
+
+- name: HealthOwingAndWaiting
+  description: >-
+    Accounts with OPEN SUPPORT CASES AND UNPAID INVOICES at the same time, most owed first. THE
+    answer for "which accounts have open support cases and unpaid invoices", "who owes us money
+    and is waiting on support" and "who is not paying and also has a problem open" — the
+    accounts where a collections call and a support fix are the same conversation.
+  outputLabel: OwingAndWaitingRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+    WHERE i.paymentStatus <> 'succeeded'
+    WITH a, count(i) AS unpaidInvoices, sum(i.amountDueCents) / 100.0 AS owed,
+         collect(DISTINCT i.currency)[0] AS currency
+    MATCH (a)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    RETURN a.accountKey AS accountKey, a.name AS account, unpaidInvoices, owed, currency,
+           count(c) AS openCases, collect(c.subject) AS subjects
+    ORDER BY owed DESC
+
+- name: HealthRevenueBehindCases
+  description: >-
+    Recurring revenue sitting behind open support cases: every paying account with something
+    open, what it pays per billing period, and when it next renews. THE answer for "how much
+    revenue is at risk from open support cases" and "which unhappy customers renew soonest".
+  outputLabel: RevenueBehindCasesRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    WITH a, count(c) AS openCases,
+         sum(CASE WHEN c.priority IN ['urgent', 'high'] THEN 1 ELSE 0 END) AS highPriority,
+         max(c.replyCount) AS longestThread
+    MATCH (a)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription)
+    WHERE s.status = 'active'
+    RETURN a.accountKey AS accountKey, a.name AS account, openCases, highPriority, longestThread,
+           sum(s.amountCents) / 100.0 AS perPeriod, s.currency AS currency,
+           min(s.periodEndsOn) AS nextRenewal
+    ORDER BY perPeriod DESC
+
+- name: HealthBilledButUnknownToCrm
+  description: >-
+    Customers we BILL that the CRM has NO RECORD of. THE answer for "who are we billing that
+    the CRM has no record of", "who are we billing that sales has never heard of", "which paying
+    customers are missing from the CRM" and "which customers have no account owner". These are
+    business customers in the billing system — nothing to do with the user's own household bills.
+  outputLabel: BilledButUnknownRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)
+    OPTIONAL MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)
+    WITH a, bc, count(k) AS crmRecords
+    WHERE crmRecords = 0
+    RETURN a.accountKey AS accountKey, a.name AS account, bc.email AS billingEmail,
+           bc.customerSince AS billedSince
+    ORDER BY account

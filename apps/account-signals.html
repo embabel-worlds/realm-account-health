@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Account Signals</title>
+<meta name="description" content="A split inbox of customer accounts that need attention and accounts with good news, read live across the CRM, the helpdesk and billing, ranked by money at stake with the evidence for each, plus a plain-English ask bar over the knowledge graph.">
+<link rel="stylesheet" href="/api/v1/apps-runtime/v1/theme.css">
+<script src="/api/v1/apps-runtime/v1/embabel.js"></script>
+<script src="/api/v1/apps-runtime/gateway.js"></script>
+<script type="application/embabel-app+json">
+{"version":1,"name":"account-signals","requires":{"lenses":[],"views":["HealthOpenCasesByAccount","HealthResolvedCasesByAccount","HealthReceivablesByAccount","HealthBillingByAccount","HealthRecurringByAccount","HealthPipelineByAccount","HealthCrmRecordByAccount","HealthCompanyNotesForOpenCases","HealthDealNotesForOpenCases","HealthContactNotesForOpenCases"],"realms":["account-health"],"namespaces":["kg"]}}
+</script>
+<style>
+  :root {
+    --bg: #0a0a0f; --surface: #13131a; --surface-2: #181822; --border: #1e1e2e; --border-2: #2a2a3d;
+    --text: #e5e7eb; --dim: #6b7280; --mid: #9ca3af; --cyan: #63c0f5; --purple: #9f77cd;
+    --bad: #ff6b5e; --bad-soft: rgba(255,107,94,.12); --warn: #f5b64c;
+    --good: #3fd73c; --good-soft: rgba(63,215,60,.10);
+    --crm: #9f77cd; --support: #63c0f5; --billing: #f5b64c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.45; }
+  body { padding: 0 0 64px; min-height: 100vh;
+    background: radial-gradient(1200px 500px at 15% -10%, rgba(255,107,94,.07), transparent 60%),
+                radial-gradient(1200px 500px at 85% -10%, rgba(63,215,60,.06), transparent 60%), var(--bg); }
+  a { color: var(--cyan); text-decoration: none; } a:hover { text-decoration: underline; }
+  .num { font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  header.top { max-width: 1320px; margin: 0 auto; padding: 28px 24px 8px; display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: -.02em; }
+  h1 span { color: var(--dim); font-weight: 400; }
+  .asof { color: var(--dim); font-size: 12.5px; margin-left: auto; display: flex; gap: 12px; align-items: center; }
+  button { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-2);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--cyan); } button:disabled { opacity: .5; cursor: default; }
+
+  /* Ask bar */
+  .ask { max-width: 1320px; margin: 10px auto 0; padding: 0 24px; }
+  .askbox { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--border-2);
+    border-radius: 14px; padding: 12px 14px; transition: border-color .15s, box-shadow .15s; }
+  .askbox:focus-within { border-color: var(--cyan); box-shadow: 0 0 0 4px rgba(99,192,245,.10); }
+  .askbox input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text); font-size: 16.5px; }
+  .askbox input::placeholder { color: var(--dim); }
+  kbd { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--mid); border: 1px solid var(--border-2);
+    border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; background: var(--surface-2); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .chip { font-size: 12.5px; color: var(--mid); background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 4px 11px; }
+  .chip:hover { color: var(--text); border-color: var(--cyan); }
+  .hintline { color: var(--dim); font-size: 12.5px; margin-top: 8px; }
+
+  /* Answer panel */
+  #answer { max-width: 1320px; margin: 14px auto 0; padding: 0 24px; }
+  .answer { background: var(--surface); border: 1px solid var(--border-2); border-radius: 14px; padding: 16px 18px; }
+  .answer h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .answer .meta { color: var(--dim); font-size: 12.5px; margin-bottom: 10px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--mid); font-weight: 500; background: var(--surface-2); position: sticky; top: 0; }
+  tr:last-child td { border-bottom: 0; }
+  details { margin-top: 10px; color: var(--mid); font-size: 12.5px; }
+  pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; color: var(--mid);
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .notice { border-left: 3px solid var(--warn); background: rgba(245,182,76,.08); padding: 8px 12px; border-radius: 0 8px 8px 0; font-size: 13px; margin: 8px 0; }
+  .notice.err { border-left-color: var(--bad); background: var(--bad-soft); }
+
+  /* Summary + lanes */
+  .state { max-width: 1320px; margin: 14px auto 0; padding: 0 24px; }
+  main { max-width: 1320px; margin: 18px auto 0; padding: 0 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .lane { min-width: 0; }
+  .lanehead { display: flex; align-items: baseline; gap: 10px; padding: 0 4px 10px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+  .lanehead h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .09em; margin: 0; font-weight: 650; }
+  .lane.bad .lanehead h2 { color: var(--bad); } .lane.good .lanehead h2 { color: var(--good); }
+  .lanehead .count { font-size: 26px; font-weight: 650; }
+  .lanehead .stake { margin-left: auto; color: var(--mid); font-size: 13px; text-align: right; }
+  .lane.active .lanehead { border-bottom-color: var(--border-2); }
+  .empty { color: var(--dim); padding: 22px 6px; font-size: 14px; }
+
+  .card { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px 13px 19px; margin-bottom: 10px; cursor: pointer; transition: transform .08s, border-color .12s, background .12s; outline: 0; }
+  .card::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: var(--bar, var(--border-2)); }
+  .lane.bad .card { --bar: var(--bad); } .lane.bad .card.sev2 { --bar: var(--warn); } .lane.good .card { --bar: var(--good); }
+  .card:hover { border-color: var(--border-2); background: var(--surface-2); }
+  .card.sel { border-color: var(--cyan); background: var(--surface-2); box-shadow: 0 0 0 3px rgba(99,192,245,.10); }
+  .row1 { display: flex; align-items: baseline; gap: 10px; }
+  .acct { font-weight: 620; font-size: 16px; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stakeval { margin-left: auto; font-size: 17px; font-weight: 650; white-space: nowrap; }
+  .stakelbl { color: var(--dim); font-size: 11.5px; font-weight: 400; margin-left: 5px; }
+  .headline { margin-top: 3px; color: var(--text); font-size: 14.5px; }
+  .lane.bad .headline b { color: var(--bad); font-weight: 600; } .lane.bad .sev2 .headline b { color: var(--warn); }
+  .lane.good .headline b { color: var(--good); font-weight: 600; }
+  .why { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag { font-size: 12px; border-radius: 6px; padding: 2px 8px; border: 1px solid var(--border-2); color: var(--mid); white-space: nowrap; }
+  .tag i { font-style: normal; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .tag.crm i { background: var(--crm); } .tag.support i { background: var(--support); } .tag.billing i { background: var(--billing); }
+  .more { color: var(--dim); font-size: 12px; align-self: center; }
+
+  /* Drawer */
+  #scrim { position: fixed; inset: 0; background: rgba(5,5,10,.6); opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 50; }
+  #scrim.open { opacity: 1; pointer-events: auto; }
+  #drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--surface); border-left: 1px solid var(--border-2);
+    transform: translateX(102%); transition: transform .18s ease-out; z-index: 60; overflow-y: auto; padding: 24px 24px 80px; }
+  #drawer.open { transform: none; }
+  #drawer h2 { margin: 0; font-size: 21px; letter-spacing: -.02em; }
+  #drawer .sub { color: var(--dim); font-size: 13px; margin-top: 2px; }
+  .close { position: absolute; top: 18px; right: 18px; }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0 6px; }
+  .kpi { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .kpi .v { font-size: 18px; font-weight: 650; } .kpi .l { color: var(--dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; }
+  .reason { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-top: 10px; background: var(--bg); }
+  .reason.bad { border-left: 3px solid var(--bad); } .reason.warn { border-left: 3px solid var(--warn); } .reason.good { border-left: 3px solid var(--good); }
+  .reason h4 { margin: 0 0 4px; font-size: 14.5px; font-weight: 600; }
+  .reason p { margin: 0; color: var(--mid); font-size: 13.5px; }
+  .reason ul { margin: 8px 0 0; padding-left: 18px; color: var(--text); font-size: 13.5px; }
+  .reason .src { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .versus { margin-top: 12px; border-top: 1px dashed var(--border-2); padding-top: 10px; }
+  .vs-h { color: var(--dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 6px; }
+  blockquote { margin: 0 0 8px; padding: 8px 12px; border-left: 2px solid var(--crm); background: rgba(159,119,205,.07); border-radius: 0 8px 8px 0; color: var(--text); font-size: 13.5px; }
+  blockquote span { display: block; color: var(--dim); font-size: 11.5px; margin-bottom: 3px; }
+  .sect { margin: 22px 0 6px; color: var(--dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+
+  footer { max-width: 1320px; margin: 28px auto 0; padding: 0 24px; color: var(--dim); font-size: 12.5px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  footer .keys { margin-left: auto; display: flex; gap: 12px; flex-wrap: wrap; }
+  #how-it-works { display: none; max-width: 900px; margin: 22px auto 0; padding: 22px 26px; background: var(--surface); border: 1px solid var(--border-2); border-radius: 14px; font-size: 14px; color: var(--mid); }
+  #how-it-works:target, #how-it-works.show { display: block; }
+  #how-it-works h3 { color: var(--text); font-size: 15px; margin: 18px 0 6px; } #how-it-works h3:first-child { margin-top: 0; }
+  #how-it-works code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+  #how-it-works li { margin: 4px 0; }
+  .settings label { display: block; margin-top: 10px; font-size: 12.5px; color: var(--dim); }
+  .settings input { width: 100%; margin-top: 4px; background: var(--bg); border: 1px solid var(--border-2); color: var(--text); border-radius: 8px; padding: 7px 10px; font: 12.5px ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>Account Signals <span>— what needs you, and what is going well</span></h1>
+  <div class="asof"><span id="asof"></span><button id="refresh" title="Read the three systems again">Refresh</button></div>
+</header>
+
+<section class="ask">
+  <div class="askbox">
+    <span aria-hidden="true" style="color:var(--cyan);font-size:17px">&#10022;</span>
+    <input id="q" type="text" autocomplete="off" spellcheck="false"
+           placeholder="Type to filter the inboxes — press Enter to ask the graph in plain English" aria-label="Filter or ask">
+    <kbd>&#8984;K</kbd>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div class="hintline" id="hintline"></div>
+</section>
+
+<section id="answer"></section>
+
+<section class="state"><embabel-operation-state id="state"></embabel-operation-state><div id="problems"></div></section>
+
+<main>
+  <section class="lane bad active" id="lane-bad" data-lane="bad">
+    <div class="lanehead"><span class="count num" id="bad-count">–</span><h2>Needs attention</h2><span class="stake" id="bad-stake"></span></div>
+    <div id="bad-list"></div>
+  </section>
+  <section class="lane good" id="lane-good" data-lane="good">
+    <div class="lanehead"><span class="count num" id="good-count">–</span><h2>Good news</h2><span class="stake" id="good-stake"></span></div>
+    <div id="good-list"></div>
+  </section>
+</main>
+
+<div id="slipped" style="max-width:1320px;margin:18px auto 0;padding:0 28px;color:var(--dim);font-size:13px"></div>
+
+<footer>
+  <span>Read live from the CRM, the helpdesk and billing. Nothing is stored.</span>
+  <a href="#how-it-works" id="how-link">How it works</a>
+  <span class="keys"><span><kbd>j</kbd> <kbd>k</kbd> move</span><span><kbd>&larr;</kbd> <kbd>&rarr;</kbd> switch inbox</span><span><kbd>Enter</kbd> open</span><span><kbd>e</kbd> done</span><span><kbd>Esc</kbd> close</span></span>
+</footer>
+
+<section id="how-it-works">
+  <h3>1. The data</h3>
+  <p>Every figure is read when this page loads, or when you press Refresh, from three systems through the world's knowledge graph: the <b>CRM</b> (accounts, deals, notes), the <b>helpdesk</b> (support cases) and <b>billing</b> (invoices, subscriptions). They meet on one node per company, <code>CustomerAccount</code>, which each system's realm keys by the company's web domain. Nothing is copied or stored by this app. The source realms cache a read for one to five minutes, so "now" can be up to five minutes old.</p>
+  <h3>2. The questions</h3>
+  <p><b>First, who is an account.</b> A company becomes an account when one of the three systems' realms keys it, which happens when that system is read. So before anything else the page invokes the views listed under "Which views find the companies" below — by default <code>OdooCompanies</code>, <code>LagoCustomers</code> and <code>ChatwootCompanies</code>. These are the only product names on this page and they are a setting: a world with a different CRM lists that realm's view instead.</p>
+  <p>Then it invokes ten saved views from the <code>account-health</code> realm, all without parameters, and joins their rows by <code>accountKey</code> in the browser:</p>
+  <ul>
+    <li><code>HealthOpenCasesByAccount</code> — open and pending support cases per account: count, high priority, longest thread, oldest opened, subjects.</li>
+    <li><code>HealthResolvedCasesByAccount</code> — resolved cases per account and when the last was closed.</li>
+    <li><code>HealthReceivablesByAccount</code> — unpaid invoices per account, how many failed collection, the amount owed.</li>
+    <li><code>HealthBillingByAccount</code> — every invoice issued per account and how many were paid.</li>
+    <li><code>HealthRecurringByAccount</code> — active subscriptions per account: amount per billing period and next renewal.</li>
+    <li><code>HealthPipelineByAccount</code> — deals per account: open pipeline, open deal names, next close date, won and lost counts.</li>
+    <li><code>HealthCrmRecordByAccount</code> — whether the CRM has a record of the account at all.</li>
+    <li><code>HealthCompanyNotesForOpenCases</code>, <code>HealthDealNotesForOpenCases</code>, <code>HealthContactNotesForOpenCases</code> — for accounts with an open case only: the text and date of every CRM note on the company, on its deals and on its people.</li>
+  </ul>
+  <p><b>What each label means.</b> An account lands in <b>Needs attention</b> when any of these is true, and the card lists every one that is:</p>
+  <ul>
+    <li><b>Sales can't see this</b> — it has an open case, the CRM has a record of it, and no CRM note on the company, its deals or its people shares a distinctive word with the case's subject. The test is done in this page and is deliberately literal: words of four letters or more, with the vocabulary any software business uses (customer, support, feature, platform and the like) ignored. It can miss a note that describes the problem in other words, which is why the card shows you the notes themselves, beside what support is dealing with, so you can judge.</li>
+    <li><b>Selling into a problem</b> — an open case and an open deal at the same time.</li>
+    <li><b>Not paying, and waiting on us</b> — an unpaid invoice and an open case at the same time.</li>
+    <li><b>Payment failed</b> — billing tried to collect an invoice and could not.</li>
+    <li><b>Renews soon with a case open</b> — a subscription renews within 120 days and a case is open.</li>
+    <li><b>Nobody owns this customer</b> — an open case, no record in the CRM and no invoice in billing.</li>
+    <li><b>Billed, but nobody owns them</b> — billing invoices them and the CRM has no record.</li>
+    <li><b>Deal past its close date</b> — an open deal whose expected close date has passed. This only ever ADDS to a card that is there for another reason. Accounts where it is the only thing wrong are counted in one line under the inboxes, because a slipped date is CRM housekeeping and not a customer in trouble.</li>
+    <li><b>Owes us</b> — an unpaid invoice, with nothing else wrong.</li>
+  </ul>
+  <p>An account with none of those lands in <b>Good news</b> when any of these is true: <b>clear runway</b> (an open deal that is not past its close date, no open case, nothing owed), <b>easy renewal</b> (renews within 120 days, no open case, nothing owed), <b>just fixed</b> (resolved cases and none open), <b>pays every invoice</b> (three or more invoices, all paid), <b>room to grow</b> (won before, nothing open now, still paying). Cards are ranked by money at stake: recurring amount per billing period plus open pipeline plus amount owed. Those can be in different currencies; the ranking adds the numbers as they are and the card shows each with its own currency. Pipeline is in the CRM's company currency.</p>
+  <p><b>The ask bar.</b> Typing filters the cards already on screen. Pressing Enter sends your words, unchanged, to <code>gateway.kg.ask</code>, which writes a read-only graph query, runs it and returns rows. The query it wrote is shown under the answer so you can check it. "Done" (<kbd>e</kbd>) hides a card in this browser until the account's reasons change; it changes nothing in any system.</p>
+  <h3>3. When it looks wrong</h3>
+  <ul>
+    <li><b>Loading takes a few seconds longer than it might.</b> The thirteen views are read one after another on purpose: read at once, views that reach the same records can come back empty or short while reporting success, and this page would then call a troubled account good news.</li>
+    <li><b>An empty inbox with no warning</b> means the three systems were read and nothing matched.</li>
+    <li><b>A yellow notice above the inboxes</b> means one of the ten views could not be read. Signals that depend on it are withheld rather than guessed — in particular no account is called good news on the strength of a system that did not answer.</li>
+    <li><b>An account you expect is missing</b>: it appears only once some system's realm has keyed it to a <code>CustomerAccount</code>. If a notice says a source view could not be read, companies known only to that system are absent.</li>
+    <li><b>An answer from the ask bar that looks off</b>: open "How this was answered" and read the query. A plain-English question can be read more than one way.</li>
+  </ul>
+  <h3>4. What made this possible</h3>
+  <ul>
+    <li>None of the ten views names a product. They are written against a shared vocabulary (<code>SupportCase</code>, <code>BillingInvoice</code>, <code>Opportunity</code>) that each product's realm attaches to, so replacing the helpdesk changes no view and nothing on this page.</li>
+    <li>The CRM holds <code>https://www.acmecorp.com</code>, the helpdesk <code>acmecorp.com</code> and billing <code>https://acmecorp.com</code>. One declared normalization on the account type makes those one key; no system's realm cleans the value itself.</li>
+    <li>There is no pipeline, warehouse or sync job. Each view is a graph query whose far side is fetched from the product's own API when the query runs.</li>
+  </ul>
+  <div class="settings">
+    <h3>Links back to your systems</h3>
+    <p>Invoices link with the address billing reports. Cases and CRM records need to know where your helpdesk and CRM live; <code>{id}</code> is replaced by the record's id. Stored in this browser only.</p>
+    <label>Which views find the companies (comma separated)<input id="set-sources" type="text"></label>
+    <label>Support case URL<input id="set-case" type="text"></label>
+    <label>CRM account URL<input id="set-crm" type="text"></label>
+  </div>
+</section>
+
+<div id="scrim"></div>
+<aside id="drawer" aria-hidden="true"></aside>
+
+<script>
+(function () {
+  'use strict';
+
+  function escapeHtml(v) {
+    return String(v === null || v === undefined ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  var $ = function (id) { return document.getElementById(id); };
+
+  var VIEWS = {
+    cases: 'HealthOpenCasesByAccount', resolved: 'HealthResolvedCasesByAccount', owed: 'HealthReceivablesByAccount',
+    billing: 'HealthBillingByAccount', recurring: 'HealthRecurringByAccount', pipeline: 'HealthPipelineByAccount',
+    crm: 'HealthCrmRecordByAccount', notesCompany: 'HealthCompanyNotesForOpenCases', notesDeal: 'HealthDealNotesForOpenCases',
+    notesContact: 'HealthContactNotesForOpenCases'
+  };
+  var SYSTEM_OF = { cases: 'the helpdesk', resolved: 'the helpdesk', owed: 'billing', billing: 'billing', recurring: 'billing',
+    pipeline: 'the CRM', crm: 'the CRM', notesCompany: 'the CRM', notesDeal: 'the CRM', notesContact: 'the CRM' };
+  var RENEWAL_DAYS = 120;
+  var SUGGESTED = [
+    'Which accounts have open support cases and unpaid invoices?',
+    'How much recurring revenue is behind open support cases?',
+    'Which open deals are with customers who have an open support case?',
+    'Who are we billing that the CRM has no record of?'
+  ];
+
+  /* Which views make every company an ACCOUNT. Install-specific, like the URLs: they name the three
+     products this world happens to run. Everything else on the page names none. */
+  var settings = { sourceViews: 'OdooCompanies, LagoCustomers, ChatwootCompanies', caseUrl: 'http://localhost:3100/app/accounts/1/conversations/{id}', crmUrl: 'http://localhost:8069/odoo/contacts/{id}' };
+  try { Object.assign(settings, JSON.parse(localStorage.getItem('account-signals.settings') || '{}')); } catch (e) { /* defaults stand */ }
+  var done = {};
+  try { done = JSON.parse(localStorage.getItem('account-signals.done') || '{}'); } catch (e) { done = {}; }
+
+  var model = { bad: [], good: [], slipped: [], failed: [] };
+  var sel = { lane: 'bad', index: 0 };
+  var filterText = '';
+  var loadSeq = 0, askSeq = 0;
+
+  /* ── formatting ─────────────────────────────────────────────────────────── */
+  function money(n, currency) {
+    if (n === null || n === undefined || isNaN(n)) return '';
+    var abs = Math.abs(n), s;
+    if (abs >= 1e6) s = (n / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+    else if (abs >= 1e4) s = Math.round(n / 1e3) + 'k';
+    else s = Math.round(n).toLocaleString();
+    var sym = { USD: '$', EUR: '€', GBP: '£', AUD: 'A$' }[currency];
+    return (sym ? sym : '') + s + (currency && !sym ? ' ' + currency : '');
+  }
+  function toDate(v) { if (!v) return null; var d = new Date(String(v).replace(' ', 'T')); return isNaN(d) ? null : d; }
+  function day(v) { var d = toDate(v); return d ? d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : ''; }
+  function daysFromNow(v) { var d = toDate(v); return d ? Math.round((d - new Date()) / 864e5) : null; }
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+  function list(a) { return (a || []).filter(function (x) { return x !== null && x !== undefined && x !== ''; }); }
+
+  /* A CRM note arrives as HTML. Read it as text, never as markup. */
+  function plain(html) { var d = new DOMParser().parseFromString(String(html || ''), 'text/html'); return (d.body.textContent || '').replace(/\s+/g, ' ').trim(); }
+
+  /* The words that make a case THIS case. Everything generic to a software business is dropped,
+     so "Premium support upgrade" does not count as mentioning a support problem. */
+  var GENERIC = ('about after again asking before being business cannot customer customers could does doesn every feature features from have having ' +
+    'into issue issues more need needs only over platform premium problem product request should since some support than that their them then there these ' +
+    'they this through under until user users using want wants were what when where which while will with without would your enterprise account team').split(' ');
+  function distinctive(text) {
+    return Array.from(new Set(String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter(function (w) {
+      return w.length >= 4 && GENERIC.indexOf(w) === -1 && !/^\d+$/.test(w);
+    })));
+  }
+
+  /* ── load ───────────────────────────────────────────────────────────────── */
+  async function load() {
+    var mySeq = ++loadSeq;
+    $('refresh').disabled = true;
+    $('problems').innerHTML = '';
+    var stateEl = $('state');
+    /* A company is an account once SOME system's realm has keyed it, and that happens when that
+       system is read. So read them first: otherwise a company only support knows is invisible
+       here until somebody happens to look at the helpdesk. */
+    var sources = settings.sourceViews.split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+    /* ONE AT A TIME, here and below, and not for tidiness. Views that reach the same records run
+       at once interfere with each other: a view comes back EMPTY, or short, or with another
+       view's rows, and says everything is fine (embabel/me#1350). On this page that once made a
+       customer whose payment had FAILED appear as good news. Slower and right beats fast. */
+    var unkeyed = [];
+    for (var si = 0; si < sources.length; si++) {
+      try {
+        var senv = await embabel.views.invoke(sources[si], {}, { state: stateEl, expectation: 'Finding every company the three systems know \u2014 a few seconds.' });
+        if (!senv || senv.status === 'FAILED' || senv.error) unkeyed.push(sources[si]);
+      } catch (e) { unkeyed.push(sources[si]); }
+      if (mySeq !== loadSeq) return;
+    }
+    var keys = Object.keys(VIEWS);
+    var results = [];
+    for (var ki = 0; ki < keys.length; ki++) { results.push(await readFact(keys[ki])); if (mySeq !== loadSeq) return; }
+    async function readFact(k) {
+      try {
+        var env = await embabel.views.invoke(VIEWS[k], {}, { state: stateEl, expectation: 'Reading the CRM, the helpdesk and billing — usually a few seconds.' });
+        if (!env || env.status === 'FAILED' || env.error) {
+          return { key: k, ok: false, message: (env && env.error && env.error.message) || 'The view did not complete.' };
+        }
+        return { key: k, ok: true, rows: Array.isArray(env.data) ? env.data : [], warnings: env.warnings || [] };
+      } catch (e) {
+        return { key: k, ok: false, message: e && e.message ? e.message : String(e) };
+      }
+    }
+    var facts = {}; var failed = [];
+    results.forEach(function (r) { if (r.ok) facts[r.key] = r.rows; else failed.push(r); });
+    model = compose(facts, failed);
+    $('asof').textContent = 'Read ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    $('refresh').disabled = false;
+    renderProblems(failed, unkeyed);
+    render();
+  }
+
+  function renderProblems(failed, unkeyed) {
+    var pre = (unkeyed && unkeyed.length)
+      ? '<div class="notice">Some companies may be missing: ' + escapeHtml(unkeyed.join(', ')) + ' could not be read, so companies known only to that system are not accounts yet. See \u201CHow it works\u201D to change which views are read.</div>' : '';
+    if (!failed.length) { $('problems').innerHTML = pre; return; }
+    var systems = Array.from(new Set(failed.map(function (f) { return SYSTEM_OF[f.key]; })));
+    $('problems').innerHTML = pre + '<div class="notice">Part of the picture is missing: ' + escapeHtml(systems.join(' and ')) +
+      ' did not answer for ' + escapeHtml(failed.map(function (f) { return VIEWS[f.key]; }).join(', ')) +
+      '. Signals that depend on it are withheld, and no account is shown as good news on the strength of a system that did not answer. <span style="color:var(--dim)">' +
+      escapeHtml(failed[0].message) + '</span></div>';
+  }
+
+  /* ── compose signals from facts ─────────────────────────────────────────── */
+  function compose(facts, failed) {
+    var has = function (k) { return Object.prototype.hasOwnProperty.call(facts, k); };
+    var by = {};
+    Object.keys(facts).forEach(function (k) {
+      facts[k].forEach(function (row) {
+        if (!row.accountKey) return;
+        var a = by[row.accountKey] || (by[row.accountKey] = { accountKey: row.accountKey, name: row.account || row.accountKey });
+        if (row.account) a.name = row.account;
+        if (k.indexOf('notes') === 0) (a.notes || (a.notes = [])).push(row); else a[k] = row;
+      });
+    });
+    var bad = [], good = [], slipped = [];
+    Object.keys(by).forEach(function (key) {
+      var a = by[key], R = [], G = [];
+      var cases = a.cases, owed = a.owed, rec = a.recurring, pipe = a.pipeline;
+      var openCases = cases ? cases.openCases : 0;
+      var openPipeline = pipe ? (pipe.openPipeline || 0) : 0;
+      var owedAmt = owed ? (owed.owed || 0) : 0;
+      var renewIn = rec ? daysFromNow(rec.nextRenewal) : null;
+      var subjects = cases ? list(cases.subjects) : [];
+
+      /* Bad. Each needs only PRESENCE of rows, except the blind spot, which also needs the three note views. */
+      if (openCases && a.crm && has('notesCompany') && has('notesDeal') && has('notesContact')) {
+        var notes = (a.notes || []).map(function (n) { return { on: n.writtenOn, subject: n.subject, date: n.date, text: plain(n.body) }; })
+          .sort(function (x, y) { return String(y.date).localeCompare(String(x.date)); });
+        var noteWords = distinctive(notes.map(function (n) { return n.text; }).join(' '));
+        var unseen = subjects.filter(function (subj) {
+          return !distinctive(subj).some(function (w) { return noteWords.indexOf(w) !== -1; });
+        });
+        a.crmNotes = notes;
+        if (unseen.length) {
+          R.push({ id: 'blind', sev: 1, title: "Sales can't see this", src: ['support', 'crm'],
+            head: '<b>Nothing in the CRM mentions ' + (unseen.length === 1 ? 'this customer\u2019s open problem' : 'these ' + unseen.length + ' open problems') + '</b>',
+            text: notes.length
+              ? 'Sales has written ' + plural(notes.length, 'note') + ' about this account, the latest on ' + day(notes[0].date) + '. None of them mentions what support is dealing with.'
+              : 'There is no note about this account anywhere in the CRM.',
+            items: unseen, compare: notes.slice(0, 4) });
+        }
+      }
+      if (openCases && openPipeline > 0) {
+        R.push({ id: 'selling', sev: 1, title: 'Selling into a problem', src: ['crm', 'support'],
+          head: '<b>' + money(openPipeline) + ' in open deals</b> while ' + plural(openCases, 'case is', 'cases are') + ' open',
+          text: 'Open: ' + list(pipe.openDealNames).join(', ') + '. The longest thread has run to ' + plural(cases.longestThread || 0, 'reply', 'replies') + '.',
+          items: subjects });
+      }
+      if (owedAmt > 0 && openCases) {
+        R.push({ id: 'owing', sev: 1, title: 'Not paying, and waiting on us', src: ['billing', 'support'],
+          head: '<b>' + money(owedAmt, owed.currency) + ' unpaid</b> and ' + plural(openCases, 'case', 'cases') + ' open — possibly one conversation',
+          text: plural(owed.unpaidInvoices, 'invoice') + ' outstanding. Before collections calls, find out whether they are holding payment over the problem.',
+          items: subjects });
+      }
+      if (owed && owed.failedInvoices > 0) {
+        R.push({ id: 'failed', sev: 1, title: 'Payment failed', src: ['billing'],
+          head: '<b>Collection failed</b> on ' + plural(owed.failedInvoices, 'invoice') + ' — ' + money(owedAmt, owed.currency) + ' owed',
+          text: 'Billing tried to collect and could not.', links: invoiceLinks(owed) });
+      }
+      if (openCases && renewIn !== null && renewIn >= 0 && renewIn <= RENEWAL_DAYS) {
+        R.push({ id: 'renewal', sev: 1, title: 'Renews soon with a case open', src: ['billing', 'support'],
+          head: '<b>Renews in ' + plural(renewIn, 'day') + '</b> (' + money(rec.perPeriod, rec.currency) + ' a period) with a case still open',
+          text: 'Next renewal ' + day(rec.nextRenewal) + '.', items: subjects });
+      }
+      if (openCases && has('crm') && !a.crm && has('billing') && !a.billing) {
+        R.push({ id: 'orphan', sev: 1, title: 'Nobody owns this customer', src: ['support', 'crm', 'billing'],
+          head: '<b>Support is helping a company the CRM does not track and billing does not invoice</b>',
+          text: plural(openCases, 'case') + ' open, the longest at ' + plural(cases.longestThread || 0, 'reply', 'replies') +
+            '. Either they are a customer nobody recorded, or support is working for free.', items: subjects });
+      }
+      if (a.billing && has('crm') && !a.crm) {
+        R.push({ id: 'unowned', sev: 2, title: 'Billed, but nobody owns them', src: ['billing', 'crm'],
+          head: '<b>The CRM has no record</b> of a customer billing invoices',
+          text: plural(a.billing.invoices, 'invoice') + ' issued' + (rec ? ', ' + money(rec.perPeriod, rec.currency) + ' a period' : '') + ', and no account, owner or deal in the CRM.' });
+      }
+      var closeIn = pipe ? daysFromNow(pipe.nextClose) : null;
+      /* A SUPPORTING reason. An overdue close date sharpens a card that is already here ("and the
+         deal has slipped"), but on its own it is CRM hygiene, not a customer in trouble — and a
+         pipeline full of optimistic dates would otherwise bury the accounts that are. */
+      var overdue = !!(pipe && pipe.openDeals > 0 && closeIn !== null && closeIn < 0);
+      if (overdue && R.length) {
+        R.push({ id: 'stalled', sev: 2, title: 'Deal past its close date', src: ['crm'],
+          head: '<b>' + money(openPipeline) + ' was due to close ' + plural(-closeIn, 'day') + ' ago</b>',
+          text: 'Still open: ' + list(pipe.openDealNames).join(', ') + '. Expected close ' + day(pipe.nextClose) + '.' });
+      }
+      if (owedAmt > 0 && !openCases && !(owed.failedInvoices > 0)) {
+        R.push({ id: 'unpaid', sev: 2, title: 'Owes us', src: ['billing'],
+          head: '<b>' + money(owedAmt, owed.currency) + ' unpaid</b> across ' + plural(owed.unpaidInvoices, 'invoice'),
+          text: 'Payment is pending. Nothing else is wrong with this account.', links: invoiceLinks(owed) });
+      }
+
+      /* Good. Every one of these rests on an ABSENCE, so it may only fire when the system that would
+         have shown the presence actually answered. A helpdesk that did not reply is not "no open cases". */
+      var knowCases = has('cases'), knowOwed = has('owed');
+      if (!R.length && knowCases && knowOwed && !openCases && owedAmt === 0) {
+        if (openPipeline > 0 && !overdue) {
+          G.push({ id: 'runway', title: 'Clear runway', src: ['crm', 'support', 'billing'],
+            head: '<b>' + money(openPipeline) + ' open</b>, no case open and nothing owed',
+            text: 'Nothing stands between this customer and a yes. Open: ' + list(pipe.openDealNames).join(', ') + '.' });
+        }
+        if (renewIn !== null && renewIn >= 0 && renewIn <= RENEWAL_DAYS) {
+          G.push({ id: 'renewEasy', title: 'Easy renewal', src: ['billing', 'support'],
+            head: '<b>Renews in ' + plural(renewIn, 'day') + '</b> with nothing open and nothing owed',
+            text: money(rec.perPeriod, rec.currency) + ' a period, next renewal ' + day(rec.nextRenewal) + '.' });
+        }
+        if (a.resolved && a.resolved.resolvedCases > 0) {
+          G.push({ id: 'fixed', title: 'Just fixed', src: ['support'],
+            head: '<b>' + plural(a.resolved.resolvedCases, 'case') + ' resolved</b>, none open — a good moment to call',
+            text: 'Last resolved ' + day(a.resolved.lastResolved) + '.', items: list(a.resolved.subjects).slice(0, 4) });
+        }
+        if (a.billing && a.billing.invoices >= 3 && a.billing.paidInvoices === a.billing.invoices) {
+          G.push({ id: 'payer', title: 'Pays every invoice', src: ['billing'],
+            head: '<b>' + a.billing.invoices + ' of ' + a.billing.invoices + ' invoices paid</b>',
+            text: 'Not one late or failed.' });
+        }
+        if (pipe && pipe.wonDeals > 0 && pipe.openDeals === 0 && rec) {
+          G.push({ id: 'grow', title: 'Room to grow', src: ['crm', 'billing'],
+            head: '<b>Bought before, nothing open now</b>, and still paying ' + money(rec.perPeriod, rec.currency) + ' a period',
+            text: plural(pipe.wonDeals, 'deal') + ' won, and no open conversation about the next one.' });
+        }
+      }
+
+      var stake = (rec ? rec.perPeriod || 0 : 0) + openPipeline + owedAmt;
+      var entry = { a: a, stake: stake, reasons: R.length ? R : G };
+      entry.signature = entry.reasons.map(function (r) { return r.id; }).join('+');
+      entry.sev = R.length ? Math.min.apply(null, R.map(function (r) { return r.sev; })) : 0;
+      if (R.length) bad.push(entry); else if (G.length) good.push(entry); else if (overdue) slipped.push(entry);
+    });
+    var rank = function (x, y) { return (x.sev - y.sev) || (y.reasons.length - x.reasons.length) || (y.stake - x.stake); };
+    bad.sort(rank); good.sort(function (x, y) { return y.stake - x.stake; });
+    return { bad: bad, good: good, slipped: slipped, failed: failed };
+  }
+
+  function invoiceLinks(owed) {
+    var urls = list(owed.invoiceUrls), nums = list(owed.invoices);
+    return nums.map(function (n, i) { return { label: 'Invoice ' + n, url: urls[i] || null }; });
+  }
+
+  /* ── render ─────────────────────────────────────────────────────────────── */
+  function visible(lane) {
+    var f = filterText.trim().toLowerCase();
+    return model[lane].filter(function (e) {
+      if (done[e.a.accountKey] === e.signature) return false;
+      if (!f) return true;
+      var hay = (e.a.name + ' ' + e.a.accountKey + ' ' + e.reasons.map(function (r) { return r.title + ' ' + (r.items || []).join(' '); }).join(' ')).toLowerCase();
+      return f.split(/\s+/).every(function (w) { return hay.indexOf(w) !== -1; });
+    });
+  }
+
+  function stakeParts(a) {
+    var parts = [];
+    if (a.recurring) parts.push(money(a.recurring.perPeriod, a.recurring.currency) + '<span class="stakelbl">/period</span>');
+    if (a.pipeline && a.pipeline.openPipeline > 0) parts.push(money(a.pipeline.openPipeline) + '<span class="stakelbl">pipeline</span>');
+    if (!parts.length && a.owed) parts.push(money(a.owed.owed, a.owed.currency) + '<span class="stakelbl">owed</span>');
+    return parts.slice(0, 2).join(' &nbsp;');
+  }
+
+  function cardHtml(e, lane, i) {
+    var first = e.reasons[0];
+    var tags = e.reasons.slice(0, 4).map(function (r) {
+      return '<span class="tag ' + escapeHtml(r.src[0]) + '"><i></i>' + escapeHtml(r.title) + '</span>';
+    }).join('');
+    var more = e.reasons.length > 4 ? '<span class="more">+' + (e.reasons.length - 4) + '</span>' : '';
+    var isSel = sel.lane === lane && sel.index === i;
+    return '<div class="card' + (e.sev === 2 ? ' sev2' : '') + (isSel ? ' sel' : '') + '" tabindex="0" data-lane="' + lane + '" data-i="' + i + '">' +
+      '<div class="row1"><span class="acct">' + escapeHtml(e.a.name) + '</span><span class="stakeval num">' + stakeParts(e.a) + '</span></div>' +
+      '<div class="headline">' + first.head + '</div>' +         /* head is built above from escaped-safe parts: numbers, dates and fixed words only */
+      '<div class="why">' + tags + more + '</div></div>';
+  }
+
+  function render() {
+    ['bad', 'good'].forEach(function (lane) {
+      var rows = visible(lane);
+      $(lane + '-count').textContent = rows.length;
+      var total = rows.reduce(function (s, e) { return s + e.stake; }, 0);
+      $(lane + '-stake').innerHTML = rows.length ? '<span class="num">' + escapeHtml(money(total)) + '</span> ' + (lane === 'bad' ? 'at stake' : 'in play') : '';
+      var emptyMsg = filterText.trim()
+        ? 'Nothing here matches “' + escapeHtml(filterText.trim()) + '”. Press Enter to ask the graph instead.'
+        : (model.failed.length ? 'Nothing to show from the systems that answered.' :
+           (lane === 'bad' ? 'The three systems were read and no account needs attention.' : 'The three systems were read and no account qualifies as good news yet.'));
+      $(lane + '-list').innerHTML = rows.length ? rows.map(function (e, i) { return cardHtml(e, lane, i); }).join('') : '<div class="empty">' + emptyMsg + '</div>';
+      $('lane-' + lane).classList.toggle('active', sel.lane === lane);
+    });
+    var sl = model.slipped || [];
+    $('slipped').innerHTML = sl.length
+      ? escapeHtml(plural(sl.length, 'other account has', 'other accounts have')) + ' an open deal past its expected close date and nothing else wrong \u2014 ' +
+        escapeHtml(money(sl.reduce(function (t, e) { return t + (e.a.pipeline.openPipeline || 0); }, 0))) + ' of pipeline whose dates the CRM should revisit.'
+      : '';
+    var n = visible(sel.lane).length;
+    if (sel.index >= n) sel.index = Math.max(0, n - 1);
+  }
+
+  function select(lane, i, focus) {
+    sel.lane = lane; sel.index = i; render();
+    var el = document.querySelector('.card[data-lane="' + lane + '"][data-i="' + i + '"]');
+    if (el && focus) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: 'nearest' }); }
+  }
+
+  /* ── drawer ─────────────────────────────────────────────────────────────── */
+  function srcTags(src) {
+    var names = { crm: 'CRM', support: 'Helpdesk', billing: 'Billing' };
+    return src.map(function (s) { return '<span class="tag ' + escapeHtml(s) + '"><i></i>' + escapeHtml(names[s]) + '</span>'; }).join('');
+  }
+  function link(label, url) {
+    return url ? '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>' : escapeHtml(label);
+  }
+
+  function openDrawer(e, lane) {
+    var a = e.a, kpis = [];
+    if (a.recurring) kpis.push([money(a.recurring.perPeriod, a.recurring.currency), 'per period']);
+    if (a.pipeline) kpis.push([money(a.pipeline.openPipeline || 0), 'open pipeline']);
+    kpis.push([a.owed ? money(a.owed.owed, a.owed.currency) : '0', 'owed']);
+    kpis.push([a.cases ? String(a.cases.openCases) : '0', 'open cases']);
+    if (a.recurring) kpis.push([day(a.recurring.nextRenewal), 'next renewal']);
+    if (a.pipeline) kpis.push([a.pipeline.wonDeals + ' / ' + a.pipeline.lostDeals, 'won / lost']);
+
+    var reasons = e.reasons.map(function (r) {
+      var cls = lane === 'good' ? 'good' : (r.sev === 2 ? 'warn' : 'bad');
+      var items = (r.items && r.items.length) ? '<ul>' + r.items.map(function (s) { return '<li>' + escapeHtml(s) + '</li>'; }).join('') + '</ul>' : '';
+      var compare = (r.compare && r.compare.length)
+        ? '<div class="versus"><div class="vs-h">Meanwhile, what the CRM says</div>' + r.compare.map(function (n) {
+            return '<blockquote><span>' + escapeHtml(day(n.date)) + ' \u00B7 on ' + escapeHtml(n.on) + ' \u00B7 ' + escapeHtml(n.subject || '') + '</span>' + escapeHtml(n.text) + '</blockquote>';
+          }).join('') + '</div>' : '';
+      var links = (r.links && r.links.length) ? '<ul>' + r.links.map(function (l) { return '<li>' + link(l.label, l.url) + '</li>'; }).join('') + '</ul>' : '';
+      return '<div class="reason ' + cls + '"><h4>' + escapeHtml(r.title) + '</h4><p>' + escapeHtml(r.text) + '</p>' + items + compare + links +
+        '<div class="src">' + srcTags(r.src) + '</div></div>';
+    }).join('');
+
+    var open = [];
+    if (a.crm && a.crm.crmId) open.push(link('Open in the CRM', settings.crmUrl.replace('{id}', encodeURIComponent(a.crm.crmId))));
+    if (a.cases) list(a.cases.caseIds).slice(0, 5).forEach(function (id) {
+      open.push(link('Case #' + id, settings.caseUrl.replace('{id}', encodeURIComponent(id))));
+    });
+    if (a.owed) invoiceLinks(a.owed).forEach(function (l) { open.push(link(l.label, l.url)); });
+
+    $('drawer').innerHTML =
+      '<button class="close" id="drawer-close" aria-label="Close">Esc</button>' +
+      '<h2>' + escapeHtml(a.name) + '</h2>' +
+      '<div class="sub">' + link(a.accountKey, 'https://' + a.accountKey) + (a.crm ? '' : ' · no CRM record') + '</div>' +
+      '<div class="kpis">' + kpis.map(function (k) { return '<div class="kpi"><div class="v num">' + escapeHtml(k[0]) + '</div><div class="l">' + escapeHtml(k[1]) + '</div></div>'; }).join('') + '</div>' +
+      '<div class="sect">' + (lane === 'good' ? 'Why this is good news' : 'Why this needs attention') + '</div>' + reasons +
+      (a.recurring ? '<div class="sect">What they pay for</div><div class="reason"><p>' + escapeHtml(list(a.recurring.products).join(' · ')) + '</p></div>' : '') +
+      (open.length ? '<div class="sect">Open it where the work happens</div><div class="actions">' + open.map(function (o) { return '<span class="tag">' + o + '</span>'; }).join('') + '</div>' : '') +
+      '<div class="actions"><button id="drawer-ask">Ask about this account</button><button id="drawer-done">Mark done <kbd>e</kbd></button></div>';
+    $('drawer').classList.add('open'); $('scrim').classList.add('open'); $('drawer').setAttribute('aria-hidden', 'false');
+    $('drawer-close').addEventListener('click', closeDrawer);
+    $('drawer-done').addEventListener('click', function () { markDone(e); closeDrawer(); });
+    $('drawer-ask').addEventListener('click', function () {
+      closeDrawer(); $('q').value = 'What do we know about ' + a.name + ' — open support cases, unpaid invoices and open deals?'; ask($('q').value);
+    });
+  }
+  function closeDrawer() { $('drawer').classList.remove('open'); $('scrim').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); }
+  function markDone(e) {
+    done[e.a.accountKey] = e.signature;
+    try { localStorage.setItem('account-signals.done', JSON.stringify(done)); } catch (err) { /* this session only */ }
+    render();
+    $('hintline').innerHTML = escapeHtml(e.a.name) + ' marked done. It returns if its reasons change. <a href="#" id="undo">Undo</a>';
+    $('undo').addEventListener('click', function (ev) {
+      ev.preventDefault(); delete done[e.a.accountKey];
+      try { localStorage.setItem('account-signals.done', JSON.stringify(done)); } catch (err) { /* ignore */ }
+      $('hintline').textContent = ''; render();
+    });
+  }
+
+  /* ── ask the graph ──────────────────────────────────────────────────────── */
+  function cell(v) {
+    if (v === null || v === undefined) return '<span style="color:var(--dim)">—</span>';
+    if (Array.isArray(v)) return escapeHtml(v.filter(function (x) { return x !== null; }).join(', '));
+    if (typeof v === 'object') return escapeHtml(JSON.stringify(v));
+    if (typeof v === 'number') return '<span class="num">' + escapeHtml(Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 2 })) + '</span>';
+    var s = String(v);
+    if (/^https?:\/\//.test(s)) return link(s.replace(/^https?:\/\//, '').slice(0, 48), s);
+    return escapeHtml(s);
+  }
+
+  async function ask(question) {
+    var q = (question || '').trim(); if (!q) return;
+    var mySeq = ++askSeq, started = Date.now();
+    var box = $('answer');
+    box.innerHTML = '<div class="answer"><h3>' + escapeHtml(q) + '</h3><div class="meta" id="ask-meta">Writing a graph query and running it against the three systems… 0s</div></div>';
+    var tick = setInterval(function () {
+      var m = $('ask-meta'); if (m && mySeq === askSeq) m.textContent = 'Writing a graph query and running it against the three systems… ' + Math.round((Date.now() - started) / 1000) + 's';
+    }, 1000);
+    try {
+      var timeout = new Promise(function (_, rej) { setTimeout(function () { rej(new Error('That took longer than two minutes and was stopped.')); }, 120000); });
+      var res = await Promise.race([gateway.kg.ask({ question: q, explain: true }), timeout]);
+      if (mySeq !== askSeq) return;           // superseded by a newer question
+      var rows = (res && res.rows) || [], warnings = (res && res.warnings) || [];
+      var cols = rows.length ? Object.keys(rows[0]) : [];
+      var html = '<div class="answer"><h3>' + escapeHtml(q) + '</h3><div class="meta">' +
+        escapeHtml(plural(rows.length, 'row')) + ' · ' + ((Date.now() - started) / 1000).toFixed(1) + 's' +
+        (res && res.cost ? ' · ' + escapeHtml(plural(res.cost.apiCalls || 0, 'source call')) : '') +
+        ' <a href="#" id="ask-clear" style="margin-left:10px">Clear</a></div>';
+      warnings.forEach(function (w) { html += '<div class="notice">' + escapeHtml(w) + '</div>'; });
+      if (rows.length) {
+        html += '<div class="tablewrap"><table><thead><tr>' + cols.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+          rows.slice(0, 200).map(function (r) { return '<tr>' + cols.map(function (c) { return '<td>' + cell(r[c]) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div>';
+      } else {
+        html += '<div class="notice">' + (warnings.length
+          ? 'A source did not answer, so this is not a finding of “none”.'
+          : 'The query ran and matched nothing. That may be the answer — check how it was read, below.') + '</div>';
+      }
+      if (res && res.cypher) html += '<details><summary>How this was answered</summary><pre>' + escapeHtml(res.cypher) + '</pre></details>';
+      html += '</div>';
+      box.innerHTML = html;
+      $('ask-clear').addEventListener('click', function (ev) { ev.preventDefault(); askSeq++; box.innerHTML = ''; });
+    } catch (e) {
+      if (mySeq !== askSeq) return;
+      box.innerHTML = '<div class="answer"><h3>' + escapeHtml(q) + '</h3><div class="notice err">The question was not answered: ' +
+        escapeHtml(e && e.message ? e.message : String(e)) + '</div></div>';
+    } finally { clearInterval(tick); }
+  }
+
+  /* ── wiring ─────────────────────────────────────────────────────────────── */
+  $('chips').innerHTML = SUGGESTED.map(function (s, i) { return '<button class="chip" data-s="' + i + '">' + escapeHtml(s) + '</button>'; }).join('');
+  $('chips').addEventListener('click', function (ev) {
+    var b = ev.target.closest('.chip'); if (!b) return;
+    var s = SUGGESTED[Number(b.getAttribute('data-s'))]; $('q').value = s; filterText = ''; render(); ask(s);
+  });
+  $('q').addEventListener('input', function () { filterText = $('q').value; sel.index = 0; render(); });
+  $('q').addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); var v = $('q').value; filterText = ''; render(); ask(v); }
+    if (ev.key === 'Escape') { $('q').value = ''; filterText = ''; render(); $('q').blur(); }
+  });
+  $('refresh').addEventListener('click', load);
+  $('scrim').addEventListener('click', closeDrawer);
+  document.querySelector('main').addEventListener('click', function (ev) {
+    var c = ev.target.closest('.card'); if (!c) return;
+    var lane = c.getAttribute('data-lane'), i = Number(c.getAttribute('data-i'));
+    select(lane, i, false); var e = visible(lane)[i]; if (e) openDrawer(e, lane);
+  });
+  $('how-link').addEventListener('click', function () { $('how-it-works').classList.add('show'); });
+  $('set-case').value = settings.caseUrl; $('set-crm').value = settings.crmUrl; $('set-sources').value = settings.sourceViews;
+  ['set-case', 'set-crm', 'set-sources'].forEach(function (id) {
+    $(id).addEventListener('change', function () {
+      settings.sourceViews = $('set-sources').value.trim();
+      settings.caseUrl = $('set-case').value.trim() || settings.caseUrl; settings.crmUrl = $('set-crm').value.trim() || settings.crmUrl;
+      try { localStorage.setItem('account-signals.settings', JSON.stringify(settings)); } catch (err) { /* this session only */ }
+    });
+  });
+
+  document.addEventListener('keydown', function (ev) {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') { ev.preventDefault(); $('q').focus(); $('q').select(); return; }
+    if (ev.key === 'Escape') { closeDrawer(); return; }
+    var t = ev.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    var rows = visible(sel.lane);
+    if (ev.key === 'j' || ev.key === 'ArrowDown') { ev.preventDefault(); select(sel.lane, Math.min(rows.length - 1, sel.index + 1), true); }
+    else if (ev.key === 'k' || ev.key === 'ArrowUp') { ev.preventDefault(); select(sel.lane, Math.max(0, sel.index - 1), true); }
+    else if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft' || ev.key === 'Tab') {
+      ev.preventDefault(); var other = sel.lane === 'bad' ? 'good' : 'bad';
+      select(other, Math.min(sel.index, Math.max(0, visible(other).length - 1)), true);
+    }
+    else if (ev.key === 'Enter') { var e = rows[sel.index]; if (e) { ev.preventDefault(); openDrawer(e, sel.lane); } }
+    else if (ev.key === 'e') { var d = rows[sel.index]; if (d) { markDone(d); closeDrawer(); } }
+    else if (ev.key === '/') { ev.preventDefault(); $('q').focus(); }
+  });
+
+  (async function start() {
+    try {
+      var ready = await embabel.manifest.ready;
+      if (ready && ready.ok === false) {
+        var m = ready.missing || {};
+        var missing = [].concat(m.views || [], m.realms || [], m.namespaces || []);
+        $('problems').innerHTML = '<div class="notice err">This world is missing what the page reads: ' + escapeHtml(missing.join(', ')) +
+          '. Install the account-health realm and the realms it reads through.</div>';
+        return;
+      }
+    } catch (e) { /* preflight is advisory; the calls below report for themselves */ }
+    load();
+  })();
+})();
+</script>
+
+<div id="embabel-badge" style="position:fixed;bottom:0;left:0;right:0;text-align:center;padding:6px 0;background:rgba(10,10,15,0.9);border-top:1px solid rgba(99,192,245,0.2);font-size:0.75rem;color:#6b7280;z-index:9999;pointer-events:none;">
+  Created with <a href="https://worlds.embabel.com" target="_blank" rel="noopener noreferrer" style="color:#63c0f5;text-decoration:none;pointer-events:auto;">Embabel Worlds</a>
+</div>
+</body>
+</html>

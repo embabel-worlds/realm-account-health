@@ -1,0 +1,52 @@
+# What people type at this realm — in the app's ask bar, or to an agent. A view passing by name
+# proves a different code path from the one a person meets, so every figure here asserts
+# `matchesView`: the ask's number must equal the named view's, which keeps the test true when
+# the data changes. Every question that ever disappoints is added, and stays.
+#
+# Two of these were WRONG before they were right, and are kept for that reason:
+#   - "open support cases and unpaid invoices" once returned every account with a case, because
+#     a generated query tested the invoice's DOCUMENT status where it meant the payment's.
+#   - "who are we billing that the CRM has no record of" once went to the host's household
+#     `Bill` type and returned nothing.
+# Both were fixed in realm-lago (a renamed property, and steering `examples:`), not here.
+
+- question: "Which accounts have open support cases and unpaid invoices?"
+  expect: { matchesView: { name: HealthOwingAndWaiting, column: owed }, rows: HealthOwingAndWaiting }
+- question: "Who owes us money and is also waiting on support?"
+  expect: { matchesView: { name: HealthOwingAndWaiting, column: owed } }
+- question: "Which open deals are with customers who have an open support case?"
+  expect: { matchesView: { name: HealthSellingIntoTrouble, column: openPipeline }, rows: HealthSellingIntoTrouble }
+- question: "Are we about to pitch an unhappy customer?"
+  expect: { matchesView: { name: HealthSellingIntoTrouble, column: openPipeline } }
+- question: "How much recurring revenue is behind open support cases?"
+  expect: { matchesView: { name: HealthRevenueBehindCases, column: perPeriod }, rows: HealthRevenueBehindCases }
+- question: "Who are we billing that the CRM has no record of?"
+  expect: { rows: HealthBilledButUnknownToCrm }
+- question: "Which paying customers are missing from the CRM?"
+  expect: { rows: HealthBilledButUnknownToCrm }
+# OPEN, and left red on purpose. The ask surface writes `count(i) ... ORDER BY unpaidInvoices` and
+# returns no amount, even with a steering example on LagoInvoice that sums it — the generated
+# query keeps the example's shape and drops the `sum(...)`. Suspected host-side: a guard against
+# adding money across currencies. The VIEW is right; the question in words is not, yet.
+- question: "Which accounts owe us the most?"
+  expect: { matchesView: { name: HealthReceivablesByAccount, column: owed } }
+- question: "Which customers have the most open support cases?"
+  expect: { matchesView: { name: HealthOpenCasesByAccount, column: openCases } }
+# The CRM realm's own pipeline view answers this, under its own column names — a right answer
+# this battery has no figure to pin. It must at least be an answer.
+- question: "How much pipeline do we have with each account?"
+  expect: { nonEmpty: true }
+
+# ── What this realm CANNOT answer. Asked several times each: generation is stochastic, and a
+# fabrication that shows one run in five is still a fabrication. The honest result is no rows.
+# KNOWN LIMIT: the ask surface answers "no rows" and not "this cannot be known", so a reader
+# may take silence for "nobody churned". Until it can decline, the app says as much beside an
+# empty answer, and these stay here so a generator that starts INVENTING rows is caught.
+- question: "Which customers cancelled their subscription last quarter?"
+  # Billing can only be asked for ACTIVE subscriptions (embabel/me#1346).
+  expect: { declines: true, times: 3 }
+- question: "What is each account's NPS score?"
+  expect: { declines: true, times: 3 }
+- question: "Which accounts have had a payment retried more than twice?"
+  # Payment attempts are not records in this billing system.
+  expect: { declines: true, times: 3 }
