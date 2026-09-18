@@ -9,6 +9,29 @@ the CRM is Odoo or something else. Nothing is stored: each answer is read when i
 and green dots sized by money at stake), a split inbox underneath with every reason stacked on
 each account, the CRM's own notes set beside what support is dealing with, and an ask bar.
 
+## Run it
+
+Everything is on `main` of each repo. Clone the five realms side by side (they share one parent
+directory, which is also what an appliance mounts as `/realms`):
+
+```
+realm-business-vocabulary  realm-odoo  realm-chatwoot  realm-lago  realm-account-health
+```
+
+```sh
+cd realm-account-health/stack
+./up.sh                                          # Odoo + Chatwoot + Lago, in Docker; prints sign-ins
+./load.sh --book <sample-business-data>/book      # the same story into all three, via their own APIs
+./connect.sh >> <appliance>/secrets.env           # the three API credentials; then restart the appliance
+```
+
+Install the realms in the order `connect.sh` prints (vocabulary, the three products, then this
+one), and open `/apps/account-health/account-signals.html`. People keep using Odoo, Chatwoot and
+Lago exactly as before: each is the full product with its own UI, and what they change there is
+what the next read here sees.
+
+`tests/verify.sh` in each realm reconciles it against its own product; run this realm's last.
+
 ## Models judge, rules conclude, views project
 
 | | Where | What |
