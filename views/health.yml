@@ -39,9 +39,24 @@
     MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
     WHERE c.status IN ['open', 'pending']
     RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS openCases,
-           sum(CASE WHEN c.priority IN ['urgent', 'high'] THEN 1 ELSE 0 END) AS highPriority,
            max(c.replyCount) AS longestThread, min(c.openedOn) AS firstOpened
     ORDER BY openCases DESC, longestThread DESC
+
+# `sum(CASE WHEN c.priority IN ['urgent','high'] THEN 1 ELSE 0 END)` is a conditional count the
+# GRAPH computes, and no source declaration describes it — so one such measure made the whole view
+# read every case to fold anything. Asked as its own filtered count, it is a question a desk can
+# answer: "how many of this account's open cases are urgent".
+- name: HealthUrgentCaseCountsByAccount
+  description: >-
+    Per account: how many of the open support cases are URGENT or HIGH priority. The escalation
+    signal behind HealthOpenCaseCountsByAccount — an account absent from this list has open cases
+    but none of them urgent.
+  outputLabel: AccountUrgentCaseCountsRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending'] AND c.priority IN ['urgent', 'high']
+    RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS urgentCases
+    ORDER BY urgentCases DESC
 
 - name: HealthOpenCasesByAccount
   description: >-
