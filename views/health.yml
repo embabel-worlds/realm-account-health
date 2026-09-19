@@ -17,12 +17,38 @@
 
 # ── Facts per account ─────────────────────────────────────────────────────────────────────
 
+# HOW MANY, and WHICH, are two questions with different costs — so they are two views.
+#
+# `collect(c.subject)` needs the records whatever else the query asks, so ONE view that both counts
+# and collects always pays the collecting price. Triage ("which accounts are in trouble") asks the
+# counting question across every account; the detail pane asks the collecting one about the handful
+# it is showing. Splitting them lets the first be answered by the source — one call for the whole
+# question rather than one per account — while the second keeps the records it genuinely needs.
+#
+# Measured on the audit in embabel/me#1412: `collect` is what blocks 8 of the 19 views here.
+
+- name: HealthOpenCaseCountsByAccount
+  description: >-
+    Per account: HOW MANY support cases a customer is still waiting on — the count, how many are
+    high priority or urgent, the longest back-and-forth, and when the oldest was opened. THE
+    answer for "which customers have open support cases" and "who is waiting on us" across the
+    whole book. An account absent from this list has nothing open. For WHAT the cases are about,
+    ask HealthOpenCasesByAccount about the accounts this names.
+  outputLabel: AccountOpenCaseCountsRow
+  cypher: |
+    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status IN ['open', 'pending']
+    RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS openCases,
+           sum(CASE WHEN c.priority IN ['urgent', 'high'] THEN 1 ELSE 0 END) AS highPriority,
+           max(c.replyCount) AS longestThread, min(c.openedOn) AS firstOpened
+    ORDER BY openCases DESC, longestThread DESC
+
 - name: HealthOpenCasesByAccount
   description: >-
-    Per account: the support cases a customer is still waiting on — how many, how many are
-    high priority or urgent, the longest back-and-forth, when the oldest was opened, and what
-    they are about. THE answer for "which customers have open support cases" and "who is
-    waiting on us". An account absent from this list has nothing open.
+    Per account: WHAT the open support cases are about — their subjects and ids, alongside the
+    same counts. The detail behind HealthOpenCaseCountsByAccount, for a named account or a short
+    list of them. Reads every open case it reports on, so ask it about the accounts you care
+    about rather than the whole book.
   outputLabel: AccountOpenCasesRow
   cypher: |
     MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
