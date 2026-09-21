@@ -35,9 +35,36 @@
     whole book. An account absent from this list has nothing open. For WHAT the cases are about,
     ask HealthOpenCasesByAccount about the accounts this names.
   outputLabel: AccountOpenCaseCountsRow
+  # ANCHORED ON THE DESK, NOT ON EACH ACCOUNT. `(a:CustomerAccount)-[:HAS_CASE]->` binds every
+  # account as an anchor and asks the desk about each one — Chatwoot's filter takes no IN-list, so
+  # that is literally one call per account and it refuses above ~200.
+  #
+  # The desk sweep needs no join at all to get back to the account: Chatwoot records the company
+  # domain ON the conversation (`accountKey`), so one paged read carries the grouping key with it,
+  # and CustomerAccount is persisted so matching it costs nothing.
+  #
+  # Only accounts the spine knows are reported, which is deliberate: a case whose accountKey
+  # matches no account is a desk record for a company nobody sells to or bills, and inventing a
+  # row for it would put a name in this list that exists nowhere else.
+  # The `WITH` was load-bearing against the engine as it shipped, and the reason recorded here
+  # before was WRONG. Writing the join the obvious way —
+  # `MATCH (a:CustomerAccount {accountKey: c.accountKey})` — returned ZERO rows, and the cause was
+  # not seeding or inline pins at all: AGGREGATE PUSHDOWN. `count(c)` over a producer declaring
+  # `aggregates:` replaced the 1,521 conversations with stand-in nodes carrying an id, the key echo
+  # and the absorbed-predicate stamp and NOTHING else, so the pin read null off every one. The
+  # give-away was one query: `RETURN count(c), count(c.accountKey)` answered 1521, 0.
+  #
+  # A `WITH` that projects a property BLOCKS the push, which is the only reason this form worked —
+  # it was never about binding a variable. `count(DISTINCT c)` blocks it too, for the same reason.
+  #
+  # Fixed in the engine: pushdown now refuses when anything outside the aggregate still reads the
+  # collection's properties. Keeping the `WITH` here is harmless — it costs nothing this view was
+  # not already paying — but it is no longer required for correctness once the appliance runs an
+  # image containing that fix.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WITH c, c.accountKey AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS openCases,
            max(c.replyCount) AS longestThread, min(c.openedOn) AS firstOpened
     ORDER BY openCases DESC, longestThread DESC
@@ -52,9 +79,13 @@
     signal behind HealthOpenCaseCountsByAccount — an account absent from this list has open cases
     but none of them urgent.
   outputLabel: AccountUrgentCaseCountsRow
+  # Desk sweep, not per account — see HealthOpenCaseCountsByAccount for why, and for why the
+  # `WITH` before the spine match cannot be simplified away.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending'] AND c.priority IN ['urgent', 'high']
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WHERE c.priority IN ['urgent', 'high']
+    WITH c, c.accountKey AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS urgentCases
     ORDER BY urgentCases DESC
 
@@ -65,9 +96,13 @@
     list of them. Reads every open case it reports on, so ask it about the accounts you care
     about rather than the whole book.
   outputLabel: AccountOpenCasesRow
+  # Desk sweep. The description below still says to ask this about the accounts you care about
+  # rather than the whole book — that was advice for the per-account form, which cost one call per
+  # account. It now reads the desk once whatever you ask it for.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WITH c, c.accountKey AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS openCases,
            sum(CASE WHEN c.priority IN ['urgent', 'high'] THEN 1 ELSE 0 END) AS highPriority,
            max(c.replyCount) AS longestThread, min(c.openedOn) AS firstOpened,
@@ -80,9 +115,12 @@
     closed, and what they were about. THE answer for "what have we fixed for <customer>" and
     "who have we recently helped".
   outputLabel: AccountResolvedCasesRow
+  # The RESOLVED desk, swept once — same inversion as the open-case views. Chatwoot's status is
+  # the door's own key, so "resolved" is a different anchor rather than a filter applied after.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status = 'resolved'
+    MATCH (d:ChatwootDesk {status:'resolved'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WITH c, c.accountKey AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS resolvedCases,
            max(c.closedOn) AS lastResolved, collect(c.subject) AS subjects
     ORDER BY lastResolved DESC
@@ -95,9 +133,18 @@
     "who has a failed payment". "The most" means the largest AMOUNT, never the most invoices.
     An account absent from this list owes nothing.
   outputLabel: AccountReceivablesRow
+  # ANCHORED ON THE BILLING BOOK. `(a:CustomerAccount)-[:BILLED_AS]->` asks the biller about each
+  # account in turn and refuses above ~200; the book door reads every invoice in one paged sweep
+  # and carries its own owner (`customerUrl`), so the spine join is graph-side and free.
+  # Reconciled against Lago: 1,340 invoices not succeeded (1,339 pending + 1 failed) across 1,339
+  # accounts, in 14 API calls.
+  #
+  # The `WITH` before the spine match is required, not style — see HealthOpenCaseCountsByAccount.
   cypher: |
-    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+    MATCH (b:LagoBooks {scope:'all'})-[:HAS_INVOICE]->(i:LagoInvoice)
     WHERE i.paymentStatus <> 'succeeded'
+    WITH i, split(i.customerUrl, '//')[1] AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, i.currency AS currency,
            count(i) AS unpaidInvoices,
            sum(CASE WHEN i.paymentStatus = 'failed' THEN 1 ELSE 0 END) AS failedInvoices,
@@ -111,8 +158,11 @@
     "is <customer> a good payer" and the way to tell a billed account from one billing has
     never heard of. An account absent from this list is not billed.
   outputLabel: AccountBillingRow
+  # Same inversion as HealthReceivablesByAccount, and for the same reason.
   cypher: |
-    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+    MATCH (b:LagoBooks {scope:'all'})-[:HAS_INVOICE]->(i:LagoInvoice)
+    WITH i, split(i.customerUrl, '//')[1] AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, i.currency AS currency,
            count(i) AS invoices,
            sum(CASE WHEN i.paymentStatus = 'succeeded' THEN 1 ELSE 0 END) AS paidInvoices
@@ -125,9 +175,18 @@
     <customer> worth to us", "who are our biggest customers" and "who renews soon". Amounts are
     per billing period as the plan defines it; do not annualize them.
   outputLabel: AccountRecurringRow
+  # TWO sweeps joined graph-side, because a subscription names its customer by EXTERNAL ID and
+  # the spine is keyed on the company domain — only the customer record carries both. Going
+  # (:LagoCustomer)-[:HAS_SUBSCRIPTION]-> instead would be a per-customer fetch, 1,351 of them.
+  # Reconciled against Lago: 1,353 active subscriptions across 1,349 accounts, 42 API calls.
   cypher: |
-    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription)
+    MATCH (b:LagoBooks {scope:'all'})-[:HAS_SUBSCRIPTION]->(s:LagoSubscription)
     WHERE s.status = 'active'
+    WITH s
+    MATCH (b2:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:LagoCustomer)
+    WHERE lc.externalId = s.customerExternalId
+    WITH s, split(lc.url, '//')[1] AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, s.currency AS currency,
            count(s) AS activeSubscriptions, sum(s.amountCents) / 100.0 AS perPeriod,
            min(s.periodEndsOn) AS nextRenewal, collect(s.product) AS products
@@ -140,8 +199,25 @@
     trying to sell <customer>" and "how much pipeline do we have with <customer>". An account
     absent from this list has no deal in the CRM, open or closed.
   outputLabel: AccountPipelineRow
+  # ANCHORED ON THE BOOK, NOT ON EACH ACCOUNT — this is what makes it answerable at scale.
+  #
+  # The natural way to write this is `(a:CustomerAccount)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o)`,
+  # which reads well and refuses above ~200 accounts: the FIRST hop binds every account as an
+  # anchor and fans out one CRM call each. At 2,053 accounts it does not run at all.
+  #
+  # Inverted, it is three cheap steps: sweep every deal off the book door in one paged read,
+  # resolve their customers through a BATCHED lookup (2,000 keys in 40 calls, not 2,000), then
+  # join to the CustomerAccount spine — which is persisted, so that hop costs nothing. Measured
+  # at 40 API calls for the whole book, and the totals reconcile to Odoo exactly: 2,000 deals,
+  # 400 won, 400 lost, 1,200 open.
+  #
+  # HAS_ANY_LEAD and not HAS_OPEN_LEAD: the pipeline door stops at deals still in play, and this
+  # view reports wonDeals and lostDeals. Using the open door here would have quietly answered
+  # zero for both on every account.
   cypher: |
-    MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
+    WITH o, split(k.email, '@')[1] AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account,
            sum(CASE WHEN o.won_status = 'pending' THEN o.expected_revenue ELSE 0 END) AS openPipeline,
            sum(CASE WHEN o.won_status = 'pending' THEN 1 ELSE 0 END) AS openDeals,
@@ -157,8 +233,11 @@
     does not: an account absent from this list has no record in the CRM at all, however much
     it is billed or however many cases it has open.
   outputLabel: AccountCrmRecordRow
+  # The book's customer door, not a per-account CRM lookup.
   cypher: |
-    MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k:CrmAccount)
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_CUSTOMER]->(k:OdooCustomer)
+    WITH k, split(k.email, '@')[1] AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, k.id AS crmId, k.website AS website
     ORDER BY account
 
@@ -218,14 +297,32 @@
     pitch an unhappy customer", "which deals are at risk from support problems" and "what
     should sales know before the next call".
   outputLabel: SellingIntoTroubleRow
+  # CROSS-REALM, AND BOTH SIDES SWEPT. Two rules learned the hard way here:
+  #
+  # 1. JOIN BEFORE AGGREGATING. An aggregating WITH placed before the join to the second sweep
+  #    makes that join match NOTHING — the second producer still runs, so the cost is paid and
+  #    the answer is empty. Reproducible; not yet reduced to a minimal case.
+  # 2. DEDUPE ON IDENTITY, NOT ON VALUE. Joining two collections fans out one row per pair, so a
+  #    plain sum over money counts each invoice once per case. `collect(DISTINCT [id, amount])`
+  #    keyed on the record's OWN id is correct; `sum(DISTINCT amount)` is NOT — it would merge
+  #    two different invoices that happen to bill the same figure.
+  #
+  # The join key must also be WITH-bound, never computed inline in the WHERE.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
-    WITH a, count(c) AS openCases, max(c.replyCount) AS longestThread, collect(c.subject) AS subjects
-    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
     WHERE o.won_status = 'pending'
+    WITH o, split(k.email, '@')[1] AS domain
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WHERE c.accountKey = domain
+    WITH domain, collect(DISTINCT [o.id, o.name, o.expected_revenue]) AS dealRows,
+         count(DISTINCT c) AS openCases, max(c.replyCount) AS longestThread,
+         collect(DISTINCT c.subject) AS subjects
+    WITH domain, [x IN dealRows | x[1]] AS deals,
+         reduce(s = 0.0, x IN dealRows | s + x[2]) AS openPipeline,
+         openCases, longestThread, subjects
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, openCases, longestThread, subjects,
-           sum(o.expected_revenue) AS openPipeline, collect(o.name) AS deals
+           openPipeline, deals
     ORDER BY openPipeline DESC
 
 - name: HealthOwingAndWaiting
@@ -235,15 +332,31 @@
     and is waiting on support" and "who is not paying and also has a problem open" — the
     accounts where a collections call and a support fix are the same conversation.
   outputLabel: OwingAndWaitingRow
+  # CROSS-REALM, AND BOTH SIDES SWEPT. Two rules learned the hard way here:
+  #
+  # 1. JOIN BEFORE AGGREGATING. An aggregating WITH placed before the join to the second sweep
+  #    makes that join match NOTHING — the second producer still runs, so the cost is paid and
+  #    the answer is empty. Reproducible; not yet reduced to a minimal case.
+  # 2. DEDUPE ON IDENTITY, NOT ON VALUE. Joining two collections fans out one row per pair, so a
+  #    plain sum over money counts each invoice once per case. `collect(DISTINCT [id, amount])`
+  #    keyed on the record's OWN id is correct; `sum(DISTINCT amount)` is NOT — it would merge
+  #    two different invoices that happen to bill the same figure.
+  #
+  # The join key must also be WITH-bound, never computed inline in the WHERE.
   cypher: |
-    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+    MATCH (b:LagoBooks {scope:'all'})-[:HAS_INVOICE]->(i:LagoInvoice)
     WHERE i.paymentStatus <> 'succeeded'
-    WITH a, count(i) AS unpaidInvoices, sum(i.amountDueCents) / 100.0 AS owed,
-         collect(DISTINCT i.currency)[0] AS currency
-    MATCH (a)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
+    WITH i, split(i.customerUrl, '//')[1] AS domain
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WHERE c.accountKey = domain
+    WITH domain, collect(DISTINCT [i.id, i.amountDueCents]) AS inv,
+         collect(DISTINCT i.currency)[0] AS currency,
+         count(DISTINCT c) AS openCases, collect(DISTINCT c.subject) AS subjects
+    WITH domain, size(inv) AS unpaidInvoices,
+         reduce(s = 0.0, x IN inv | s + x[1]) / 100.0 AS owed, currency, openCases, subjects
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, unpaidInvoices, owed, currency,
-           count(c) AS openCases, collect(c.subject) AS subjects
+           openCases, subjects
     ORDER BY owed DESC
 
 - name: HealthRevenueBehindCases
@@ -252,17 +365,39 @@
     open, what it pays per billing period, and when it next renews. THE answer for "how much
     revenue is at risk from open support cases" and "which unhappy customers renew soonest".
   outputLabel: RevenueBehindCasesRow
+  # CROSS-REALM, AND BOTH SIDES SWEPT. Two rules learned the hard way here:
+  #
+  # 1. JOIN BEFORE AGGREGATING. An aggregating WITH placed before the join to the second sweep
+  #    makes that join match NOTHING — the second producer still runs, so the cost is paid and
+  #    the answer is empty. Reproducible; not yet reduced to a minimal case.
+  # 2. DEDUPE ON IDENTITY, NOT ON VALUE. Joining two collections fans out one row per pair, so a
+  #    plain sum over money counts each invoice once per case. `collect(DISTINCT [id, amount])`
+  #    keyed on the record's OWN id is correct; `sum(DISTINCT amount)` is NOT — it would merge
+  #    two different invoices that happen to bill the same figure.
+  #
+  # The join key must also be WITH-bound, never computed inline in the WHERE.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
-    WITH a, count(c) AS openCases,
-         sum(CASE WHEN c.priority IN ['urgent', 'high'] THEN 1 ELSE 0 END) AS highPriority,
-         max(c.replyCount) AS longestThread
-    MATCH (a)-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription)
+    MATCH (b:LagoBooks {scope:'all'})-[:HAS_SUBSCRIPTION]->(s:LagoSubscription)
     WHERE s.status = 'active'
+    WITH s
+    MATCH (b2:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:LagoCustomer)
+    WHERE lc.externalId = s.customerExternalId
+    WITH s, split(lc.url, '//')[1] AS domain
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WHERE c.accountKey = domain
+    WITH domain, collect(DISTINCT [s.id, s.amountCents]) AS subs,
+         collect(DISTINCT s.currency)[0] AS currency, min(s.periodEndsOn) AS nextRenewal,
+         collect(DISTINCT [c.id, c.priority]) AS caseRows,
+         max(c.replyCount) AS longestThread
+    // Both case figures come off the SAME deduped list. A `sum(CASE WHEN ...)` here would be
+    // multiplied by the number of subscriptions the account has — the fan-out this whole shape
+    // exists to survive, and it would have read as a plausible escalation count.
+    WITH domain, reduce(x = 0.0, y IN subs | x + y[1]) / 100.0 AS perPeriod,
+         currency, nextRenewal, size(caseRows) AS openCases,
+         size([y IN caseRows WHERE y[1] IN ['urgent', 'high']]) AS highPriority, longestThread
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, openCases, highPriority, longestThread,
-           sum(s.amountCents) / 100.0 AS perPeriod, s.currency AS currency,
-           min(s.periodEndsOn) AS nextRenewal
+           perPeriod, currency, nextRenewal
     ORDER BY perPeriod DESC
 
 - name: HealthBilledButUnknownToCrm
