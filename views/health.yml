@@ -244,18 +244,41 @@
 # What the CRM's people WROTE DOWN about the accounts that have a case open — the text, so a
 # reader can set what support is dealing with beside what sales believes. Three views and not
 # one: a note may sit on the company, on a deal or on a person, and one query over all three is
-# the shape #1348 breaks. Restricted to accounts with an open case because that is the question
-# ("does anyone in the CRM know?"), and it keeps the read to a handful of accounts.
+# the shape #1348 breaks.
+#
+# ALL THREE ARE SWEEPS, and they did not used to be. Each opened
+# `MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)` on the belief — written here in a
+# comment, and wrong — that restricting to accounts with an open case "keeps the read to a
+# handful of accounts". The restriction IS the expensive hop: that first pattern binds EVERY
+# account as an anchor and asks the desk about each one. Measured 2026-09-21 at 2,030 accounts,
+# all three views failed in the planner with `exceeding maxAnchors 200`, the Account Signals app
+# withheld every CRM signal, and the page reported that the CRM did not answer. The open-case
+# set is not a handful either: 1,516 accounts had one.
+#
+# Inverted they are three sweeps joined graph-side, the same shape the rest of this file uses.
+# The notes come off the book's chatter door in one paged read (`messagesAll`, added to
+# realm-odoo for this: 6,000 notes in 13 calls), the CRM records off the customer door, and the
+# open-case filter off the DESK — never by anchoring on accounts.
+#
+# ORDER MATTERS: the desk join comes AFTER the notes are bound and carries no aggregate, per the
+# "JOIN BEFORE AGGREGATING" rule the conjunction views below record. Collecting the open-case
+# keys first and filtering against the list reads better and returns NOTHING.
 - name: HealthCompanyNotesForOpenCases
   description: >-
     For every account with an open support case: the notes on the company's own CRM record,
     with their text and date. Part of "does the CRM know about this customer's problem".
   outputLabel: OpenCaseCompanyNoteRow
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
-    WITH DISTINCT a
-    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_NOTE]->(n:AccountNote)
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
+    WHERE n.model = 'res.partner'
+    WITH n
+    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
+    WHERE k.id = toString(n.res_id) AND toString(k.is_company) = 'true'
+    WITH n, k, split(k.email, '@')[1] AS domain
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WHERE c.accountKey = domain
+    WITH DISTINCT n, k, domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, 'the company' AS writtenOn, k.name AS subject,
            n.date AS date, n.body AS body
     ORDER BY date DESC
@@ -265,11 +288,19 @@
     For every account with an open support case: the notes on its DEALS in the CRM, with their
     text, date and the deal they are on.
   outputLabel: OpenCaseDealNoteRow
+  # The deal side of the same door — `model = 'crm.lead'` — reaching the account through the
+  # lead's own customer, exactly as HealthPipelineByAccount does.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
-    WITH DISTINCT a
-    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)-[:HAS_NOTE]->(n:AccountNote)
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
+    WHERE n.model = 'crm.lead'
+    WITH n
+    MATCH (b2:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
+    WHERE o.id = toString(n.res_id)
+    WITH n, o, split(k.email, '@')[1] AS domain
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WHERE c.accountKey = domain
+    WITH DISTINCT n, o, domain
+    MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, 'a deal' AS writtenOn, o.name AS subject,
            n.date AS date, n.body AS body
     ORDER BY date DESC
@@ -279,12 +310,21 @@
     For every account with an open support case: the notes on the PEOPLE the CRM knows there,
     with their text, date and who they are about.
   outputLabel: OpenCaseContactNoteRow
+  # The same partner sweep as the company view, taking the OTHER side of `is_company`. A person
+  # at a company shares its email domain, so the spine join is the one the rest of this file
+  # uses and needs no contact-to-company hop of its own.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
-    WITH DISTINCT a
-    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_ACCOUNT_CONTACT]->(p:AccountContact)-[:HAS_NOTE]->(n:AccountNote)
-    RETURN a.accountKey AS accountKey, 'a contact' AS writtenOn, p.name AS subject,
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
+    WHERE n.model = 'res.partner'
+    WITH n
+    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
+    WHERE k.id = toString(n.res_id) AND toString(k.is_company) = 'false'
+    WITH n, k, split(k.email, '@')[1] AS domain
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WHERE c.accountKey = domain
+    WITH DISTINCT n, k, domain
+    MATCH (a:CustomerAccount {accountKey: domain})
+    RETURN a.accountKey AS accountKey, 'a contact' AS writtenOn, k.name AS subject,
            n.date AS date, n.body AS body
     ORDER BY date DESC
 

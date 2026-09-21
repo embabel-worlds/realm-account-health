@@ -194,7 +194,7 @@
     <span class="maplabel l">Needs attention</span><span class="maplabel r">Good news</span>
     <svg id="mapsvg" role="img"></svg>
     <div id="tip"></div>
-    <div class="maplegend"><span><i style="background:var(--bad)"></i>needs attention</span><span><i style="background:var(--warn)"></i>worth a look</span><span><i style="background:var(--good)"></i>good news</span><span>size = money at stake &middot; a pulsing dot is a customer who is hurting &middot; click to open</span></div>
+    <div class="maplegend"><span><i style="background:var(--bad)"></i>needs attention</span><span><i style="background:var(--warn)"></i>worth a look</span><span><i style="background:var(--good)"></i>good news</span><span>size = money at stake &middot; a pulsing dot is a customer who is hurting &middot; click to open</span><span id="mapcap" style="color:var(--dim)"></span></div>
   </div>
 </section>
 
@@ -241,7 +241,7 @@
     <li><code>HealthSharedIssues</code> — reads the derived relationship <code>SHARES_ISSUE</code>: two accounts each have an open case in the same product area (the helpdesk's own <code>area-*</code> labels).</li>
     <li><code>HealthPossiblyWithheld</code> — reads the derived relationship <code>POSSIBLY_WITHHELD_OVER</code>: an unpaid invoice and a still-open case on one account, where the case was raised before the invoice fell due.</li>
   </ul>
-  <p><b>The map.</b> Every account in either inbox is a dot. Its area is the money at stake, so a dot twice the size is twice the money. Red needs attention, amber is worth a look, green is good news. A pulsing dot is a customer the model judged to be blocked or degraded <i>and</i> frustrated. Positions mean nothing beyond the side they are on. Click a dot to open the account.</p>
+  <p><b>The map.</b> The top 20 accounts of each inbox are dots — the whole book runs to thousands, and a dot per account packs to a few pixels with no room for a label, so the graphic showed texture rather than accounts. The inboxes below are not capped, and the legend says how many are in them. A dot's area is the money at stake, so a dot twice the size is twice the money. Red needs attention, amber is worth a look, green is good news. A pulsing dot is a customer the model judged to be blocked or degraded <i>and</i> frustrated. Positions mean nothing beyond the side they are on. Click a dot to open the account.</p>
   <p><b>What each label means.</b> An account lands in <b>Needs attention</b> when any of these is true, and the card lists every one that is:</p>
   <ul>
     <li><b>Blocked / hurting and frustrated</b> — the model judged a case's impact as blocked or degraded and the customer's tone as frustrated.</li>
@@ -311,6 +311,8 @@
     pipeline: 'the CRM', crm: 'the CRM', notesCompany: 'the CRM', notesDeal: 'the CRM', notesContact: 'the CRM',
     atRisk: 'the at-risk rules', triage: 'the case triage', awareness: 'the CRM-awareness judgement', shared: 'the shared-issue rules', withheld: 'the withheld-invoice rules' };
   var RENEWAL_DAYS = 120;
+  /* How many dots per lane the map draws. The inboxes below are uncapped. */
+  var MAP_MAX = 20;
   var SUGGESTED = [
     'Which accounts have open support cases and unpaid invoices?',
     'How much recurring revenue is behind open support cases?',
@@ -723,9 +725,17 @@
     el('feGaussianBlur', { stdDeviation: '9', result: 'b' }, glow);
     var merge = el('feMerge', {}, glow); el('feMergeNode', { 'in': 'b' }, merge); el('feMergeNode', { 'in': 'SourceGraphic' }, merge);
 
-    var nodes = [];
+    var nodes = [], shown = 0, total = 0;
     ['bad', 'good'].forEach(function (lane) {
-      visible(lane).forEach(function (e, i) {
+      var all = visible(lane);
+      total += all.length;
+      /* THE TOP MAP_MAX PER LANE, not the whole book. Both lanes are already sorted — `bad` by
+         rank, `good` by stake — so a slice is the top of each. At 2,030 accounts the map drew a
+         dot per account: they pack to a few pixels, no label fits, and a picture whose point is
+         "which accounts matter" turns into texture. The lanes below still list everything; this
+         is the graphic, and a graphic that shows 1,500 things shows none of them. */
+      all.slice(0, MAP_MAX).forEach(function (e, i) {
+        shown++;
         nodes.push({ key: e.a.accountKey, lane: lane, i: i, e: e, stake: Math.max(e.stake, 1),
           fill: lane === 'good' ? 'gGood' : (e.sev === 2 ? 'gWarn' : 'gBad'), stroke: lane === 'good' ? '#3fd73c' : (e.sev === 2 ? '#f5b64c' : '#ff6b5e'),
           hurting: e.reasons.some(function (r) { return r.id === 'hurting'; }) });
@@ -741,7 +751,13 @@
       el('circle', { r: n.r * 0.92, fill: 'none', stroke: 'rgba(255,255,255,.22)', 'stroke-width': 1 }, body);
       el('circle', { 'class': 'ring', r: n.r + 5, fill: 'none', stroke: '#63c0f5', 'stroke-width': 2 }, drift);
       if (n.r >= 30) {
-        var words = n.e.a.name.split(' '), name = words[0].length < 4 && words[1] ? words[0] + ' ' + words[1] : words[0];
+        /* TWO WORDS WHEN THEY FIT, not one. Taking `words[0]` unless it was under 4 characters
+           labelled every dot in a generated book "Account" — "Account 01997" and "Account 00298"
+           are the same word until the second one, and the discriminating half was exactly what
+           got dropped. Keep the pair whenever it fits the dot; fall back to the first word. */
+        var words = n.e.a.name.split(' ');
+        var pair = words.length > 1 ? words[0] + ' ' + words[1] : words[0];
+        var name = pair.length <= 18 ? pair : words[0];
         var t1 = el('text', { 'class': 'n', y: n.r >= 44 ? -2 : 1, 'font-size': Math.max(10.5, Math.min(17, n.r * 0.3)) }, body); t1.textContent = name;
         if (n.r >= 44) { var t2 = el('text', { 'class': 'm', y: Math.min(18, n.r * 0.32) + 2, 'font-size': Math.max(10, Math.min(13.5, n.r * 0.23)) }, body); t2.textContent = money(n.e.stake); }
       }
@@ -751,6 +767,15 @@
       g.addEventListener('click', open);
       g.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { ev.stopPropagation(); open(); } });
     });
+    /* SAY WHAT IS NOT DRAWN. A capped map that does not admit the cap is a map that lies about
+       how many accounts are in trouble — the same reason the view catalogue reports what it
+       withheld rather than silently omitting it. */
+    var cap = $('mapcap');
+    if (cap) {
+      cap.textContent = total > shown
+        ? 'showing the top ' + MAP_MAX + ' of each · ' + total.toLocaleString() + ' in the inboxes below'
+        : '';
+    }
   }
 
   function showTip(n, ev) {
