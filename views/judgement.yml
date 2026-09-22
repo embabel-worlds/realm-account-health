@@ -3,9 +3,11 @@
 # other cell in these rows is computed; the labels are the only model-made ones, and each
 # rubric is written out here because this file is where a reader checks what a label means.
 #
-# Both are MATERIALISED. A judgement costs a model call per row (the triage is ~30s cold) and
-# does not change until the words do, so the rows are kept for the `ttl` and an app reads them
-# instantly. "Now" for these two views means "as of the last time they ran".
+# Both are MATERIALISED. A judgement is model work — batched twenty rows to a call, so the triage
+# at 150 cases is ~16 calls and ~10s cold (measured 2026-09-22) — and does not change until the
+# words do, so the rows are kept for the `ttl` and an app reads them instantly. "Now" for these
+# two views means "as of the last time they ran". The labels are repeatable: the judge runs at
+# temperature 0, so a refresh over unchanged words yields the same labels.
 #
 # A model can be wrong, and these were checked against the sources by hand. The awareness
 # judge called Rekall unaware although its CRM notes say "Custom reporting needs" and its case
@@ -39,12 +41,12 @@
   # have had, and only the worst 150 are fetched and judged. That ordering is the point: a case
   # nobody has replied to twice is not what "which customers are really hurting" is asking about.
   #
-  # WHY A CAP AT ALL, and what the cold read costs. Each judged case is one desk fetch AND TWO
-  # model calls (impact and mood), so 150 cases is ~300 model calls. THE COLD READ EXCEEDS A
-  # TYPICAL CLIENT TIMEOUT — measured 2026-09-21, an MCP `view_run` gave up twice — but the
-  # server finishes and CACHES anyway: the third call returned all 150 rows in 167ms with zero
-  # model calls. So a timeout here is a slow first caller, not a broken view, and lowering the
-  # cap to dodge it would buy a worse answer for nothing.
+  # WHY A CAP AT ALL, and what the cold read costs. Each judged case is one desk fetch; the two
+  # judgements (impact and mood) are batched twenty rows to a model call, so 150 cases is ~16
+  # calls and ~10s cold — measured 2026-09-22, half of it the 150 per-conversation fetches. Before
+  # batching it was ~300 serial calls and about three minutes, past a typical client timeout,
+  # which is where the earlier cap of 20 came from. The cap that remains is the FETCH: the message
+  # hop cannot be swept, and it rides a virtual join with a 200-anchor ceiling.
   #
   # Do NOT tune this by editing and re-reading: a materialised view's cache is keyed PER USER,
   # not per argument tuple, so a changed `LIMIT` serves the previous build until the `ttl`
@@ -96,9 +98,17 @@
   # every collect dedupes on the record's OWN id, because joining three sweeps fans out and a
   # plain collect would repeat each note once per case.
   #
-  # CAPPED at 150 accounts, worst back-and-forth first, for the same reason as HealthCaseTriage:
-  # one model call per account, and 667 accounts have an open case. Same cold-read caveat — the
-  # first caller may time out while the server finishes and caches.
+  # CAPPED at 150 accounts, worst back-and-forth first. The model is no longer the reason —
+  # batched, 150 accounts is ~8 calls and 1.5s of model time — the three-sweep join is: ~21s cold
+  # at 150 and ~43s at all 667 open-case accounts (measured 2026-09-22), most of it graph work.
+  # Raise the cap when the join is cheaper, not the judge.
+  #
+  # SETTLE WHAT IS ALREADY KNOWN before the model is asked. An account sales never wrote about is
+  # unaware by definition, and one whose case subject appears verbatim in a note is aware by the
+  # same word test the Account Signals app applies — neither needs a model. The guard is the first
+  # argument of the `coalesce` around `classify`; only accounts it leaves null reach the judge. On
+  # the generated book it settles nothing (every account has notes, none quotes a subject), so it
+  # costs nothing there and earns its keep on real CRM data.
   cypher: |
     MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
     WITH n
@@ -119,7 +129,9 @@
     MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, openCases, noteCount,
            [x IN caseRows | x[1]] AS subjects,
+           coalesce(CASE WHEN written = '' THEN 'unaware'
+                         WHEN any(x IN caseRows WHERE toLower(written) CONTAINS toLower(x[1])) THEN 'aware' END,
            classify('OPEN SUPPORT PROBLEMS: ' + problems + '  ||  WHAT SALES HAS WRITTEN IN THE CRM: ' + CASE WHEN written = '' THEN '(nothing)' ELSE written END,
              'aware,unaware',
-             'Each item lists what a customer has open with SUPPORT, then everything SALES has written about that customer in the CRM (HTML tags are noise). Decide whether sales knows about the topic. aware: any CRM note touches the SAME TOPIC as any support item, in any words - for example a support item about data residency and a note saying the customer is concerned about GDPR or data residency, or a support item asking for a report builder and a note about custom reporting needs. unaware: no note touches any of the support topics; the notes are only about deals, renewals, stakeholders or the company in general.') AS crmAwareness
+             'Each item lists what a customer has open with SUPPORT, then everything SALES has written about that customer in the CRM (HTML tags are noise). Decide whether sales knows about the topic. aware: any CRM note touches the SAME TOPIC as any support item, in any words - for example a support item about data residency and a note saying the customer is concerned about GDPR or data residency, or a support item asking for a report builder and a note about custom reporting needs. unaware: no note touches any of the support topics; the notes are only about deals, renewals, stakeholders or the company in general.')) AS crmAwareness
     ORDER BY account
