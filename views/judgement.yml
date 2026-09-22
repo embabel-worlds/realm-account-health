@@ -26,9 +26,40 @@
   # themselves are snapshotted, which is what a table of judgements is.
   materialized: true
   ttl: 6h
+  # DESK SWEEP, THEN A BOUNDED JUDGEMENT. Two separate limits are at work and both bit here.
+  #
+  # 1. `(a:CustomerAccount)-[:HAS_CASE]->` binds every account as an anchor — the same defect
+  #    the fact views were inverted out of. At 510 accounts it refused outright.
+  # 2. The message hop is per-conversation and CANNOT be swept: Chatwoot's API has no bulk
+  #    message endpoint, only `/conversations/{id}/messages`. So each case judged is one
+  #    fetch AND one model call, and 667 open cases is 667 of each — over `maxAnchors`, and
+  #    an expensive refresh even where it runs.
+  #
+  # So the cases are taken off the desk in one read, ranked by how much back-and-forth they
+  # have had, and only the worst 150 are fetched and judged. That ordering is the point: a case
+  # nobody has replied to twice is not what "which customers are really hurting" is asking about.
+  #
+  # WHY A CAP AT ALL, and what the cold read costs. Each judged case is one desk fetch AND TWO
+  # model calls (impact and mood), so 150 cases is ~300 model calls. THE COLD READ EXCEEDS A
+  # TYPICAL CLIENT TIMEOUT — measured 2026-09-21, an MCP `view_run` gave up twice — but the
+  # server finishes and CACHES anyway: the third call returned all 150 rows in 167ms with zero
+  # model calls. So a timeout here is a slow first caller, not a broken view, and lowering the
+  # cap to dodge it would buy a worse answer for nothing.
+  #
+  # Do NOT tune this by editing and re-reading: a materialised view's cache is keyed PER USER,
+  # not per argument tuple, so a changed `LIMIT` serves the previous build until the `ttl`
+  # expires. A lowered cap here returned the old 150-row result and looked like a success.
+  #
+  # The limit is a LITERAL, not a param: a materialized view may not declare params, because its
+  # cache is keyed per user and not per argument tuple — the loader refuses one that does. Change
+  # the number here and the next refresh picks it up.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WITH c, c.accountKey AS domain
+    ORDER BY c.replyCount DESC
+    LIMIT 150
+    MATCH (a:CustomerAccount {accountKey: domain})
+    WITH a, c
     MATCH (c)-[:HAS_MESSAGE]->(m:SupportMessage)
     WHERE m.messageType = 0
     WITH a, c, collect(m.body)[0] AS said
@@ -52,22 +83,42 @@
   # themselves are snapshotted, which is what a table of judgements is.
   materialized: true
   ttl: 6h
+  # THREE SWEEPS, JOINED GRAPH-SIDE — not a walk out from each account.
+  #
+  # This opened `MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)`, which binds every
+  # account as an anchor and asks the desk about each one. At 1,904 accounts it refused outright
+  # (`exceeding maxAnchors 200`), so the Account Signals app withheld the awareness signal
+  # entirely and told the reader the judgement did not answer.
+  #
+  # Inverted it is the same shape the notes views use: chatter off the book's message door, the
+  # CRM records off the partner door, and the open-case set off the DESK. Every aggregate sits
+  # AFTER the last join, per the JOIN-BEFORE-AGGREGATING rule the conjunction views record — and
+  # every collect dedupes on the record's OWN id, because joining three sweeps fans out and a
+  # plain collect would repeat each note once per case.
+  #
+  # CAPPED at 150 accounts, worst back-and-forth first, for the same reason as HealthCaseTriage:
+  # one model call per account, and 667 accounts have an open case. Same cold-read caveat — the
+  # first caller may time out while the server finishes and caches.
   cypher: |
-    MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-    WHERE c.status IN ['open', 'pending']
-    WITH a, collect(c.subject) AS subjects, count(c) AS openCases
-    MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)
-    OPTIONAL MATCH (k)-[:HAS_NOTE]->(n1:AccountNote)
-    WITH a, k, subjects, openCases, collect(DISTINCT n1.body) AS onCompany
-    OPTIONAL MATCH (k)-[:HAS_OPPORTUNITY]->(o:Opportunity)-[:HAS_NOTE]->(n2:AccountNote)
-    WITH a, k, subjects, openCases, onCompany, collect(DISTINCT n2.body) AS onDeals
-    OPTIONAL MATCH (k)-[:HAS_ACCOUNT_CONTACT]->(p:AccountContact)-[:HAS_NOTE]->(n3:AccountNote)
-    WITH a, subjects, openCases, onCompany, onDeals, collect(DISTINCT n3.body) AS onContacts
-    WITH a, subjects, openCases, onCompany + onDeals + onContacts AS notes
-    WITH a, subjects, openCases, size(notes) AS noteCount,
-         reduce(s = '', x IN subjects | s + ' | ' + x) AS problems,
-         reduce(s = '', x IN notes | s + ' | ' + coalesce(x, '')) AS written
-    RETURN a.accountKey AS accountKey, a.name AS account, openCases, noteCount, subjects,
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
+    WITH n
+    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
+    WHERE k.id = toString(n.res_id)
+    WITH n, split(k.email, '@')[1] AS domain
+    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    WHERE c.accountKey = domain
+    WITH domain,
+         collect(DISTINCT [c.id, c.subject]) AS caseRows,
+         collect(DISTINCT [n.id, n.body]) AS noteRows,
+         max(c.replyCount) AS longestThread
+    ORDER BY longestThread DESC
+    LIMIT 150
+    WITH domain, caseRows, noteRows, size(caseRows) AS openCases, size(noteRows) AS noteCount,
+         reduce(t = '', x IN caseRows | t + ' | ' + x[1]) AS problems,
+         reduce(t = '', x IN noteRows | t + ' | ' + coalesce(x[1], '')) AS written
+    MATCH (a:CustomerAccount {accountKey: domain})
+    RETURN a.accountKey AS accountKey, a.name AS account, openCases, noteCount,
+           [x IN caseRows | x[1]] AS subjects,
            classify('OPEN SUPPORT PROBLEMS: ' + problems + '  ||  WHAT SALES HAS WRITTEN IN THE CRM: ' + CASE WHEN written = '' THEN '(nothing)' ELSE written END,
              'aware,unaware',
              'Each item lists what a customer has open with SUPPORT, then everything SALES has written about that customer in the CRM (HTML tags are noise). Decide whether sales knows about the topic. aware: any CRM note touches the SAME TOPIC as any support item, in any words - for example a support item about data residency and a note saying the customer is concerned about GDPR or data residency, or a support item asking for a report builder and a note about custom reporting needs. unaware: no note touches any of the support topics; the notes are only about deals, renewals, stakeholders or the company in general.') AS crmAwareness
