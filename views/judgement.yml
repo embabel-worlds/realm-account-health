@@ -111,9 +111,13 @@
   # costs nothing there and earns its keep on real CRM data.
   cypher: |
     MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
-    WITH n
+    // The partner key is computed ONCE here, as a plain value, so the join below is an equality
+    // of two values the planner can hash-join. Written `k.id = toString(n.res_id)`, the function
+    // on one side made it a 6,000 × 4,010 cartesian filter: 13.6s against 2.5s, measured
+    // 2026-09-22 with every sweep cached.
+    WITH n, toString(n.res_id) AS partnerId
     MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
-    WHERE k.id = toString(n.res_id)
+    WHERE k.id = partnerId
     WITH n, split(k.email, '@')[1] AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain

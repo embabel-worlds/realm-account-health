@@ -271,9 +271,11 @@
   cypher: |
     MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
     WHERE n.model = 'res.partner'
-    WITH n
+    // The key as a plain VALUE, so the join is one the planner can hash: `k.id = toString(n.res_id)`
+    // is a 6,000 × 4,010 cartesian filter instead (13.6s against 2.5s, measured 2026-09-22).
+    WITH n, toString(n.res_id) AS partnerId
     MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
-    WHERE k.id = toString(n.res_id) AND toString(k.is_company) = 'true'
+    WHERE k.id = partnerId AND toString(k.is_company) = 'true'
     WITH n, k, split(k.email, '@')[1] AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain
@@ -293,9 +295,10 @@
   cypher: |
     MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
     WHERE n.model = 'crm.lead'
-    WITH n
+    // Same as the company view: the key as a plain value, so the lead join hashes.
+    WITH n, toString(n.res_id) AS leadId
     MATCH (b2:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
-    WHERE o.id = toString(n.res_id)
+    WHERE o.id = leadId
     WITH n, o, split(k.email, '@')[1] AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain
@@ -316,9 +319,10 @@
   cypher: |
     MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
     WHERE n.model = 'res.partner'
-    WITH n
+    // Same as the company view: the key as a plain value, so the partner join hashes.
+    WITH n, toString(n.res_id) AS partnerId
     MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
-    WHERE k.id = toString(n.res_id) AND toString(k.is_company) = 'false'
+    WHERE k.id = partnerId AND toString(k.is_company) = 'false'
     WITH n, k, split(k.email, '@')[1] AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain
