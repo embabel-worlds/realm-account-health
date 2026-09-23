@@ -118,7 +118,8 @@
     WITH n, toString(n.res_id) AS partnerId
     MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
     WHERE k.id = partnerId
-    WITH n, split(k.email, '@')[1] AS domain
+    WITH n, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH n, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain
     WITH domain,

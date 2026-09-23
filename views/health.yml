@@ -216,7 +216,11 @@
   # zero for both on every account.
   cypher: |
     MATCH (b:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
-    WITH o, split(k.email, '@')[1] AS domain
+    // The account's key is its WEBSITE host, not its email domain: the book keys accounts by
+    // website, and Odoo answers `false` for a company with no email (7 of the 50), which
+    // `split` refuses. toString() makes an absent value a non-matching string, not a throw.
+    WITH o, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH o, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
     MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account,
            sum(CASE WHEN o.won_status = 'pending' THEN o.expected_revenue ELSE 0 END) AS openPipeline,
@@ -236,7 +240,8 @@
   # The book's customer door, not a per-account CRM lookup.
   cypher: |
     MATCH (b:OdooBook {scope:'all'})-[:HAS_CUSTOMER]->(k:OdooCustomer)
-    WITH k, split(k.email, '@')[1] AS domain
+    WITH k, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH k, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
     MATCH (a:CustomerAccount {accountKey: domain})
     RETURN a.accountKey AS accountKey, a.name AS account, k.id AS crmId, k.website AS website
     ORDER BY account
@@ -276,7 +281,8 @@
     WITH n, toString(n.res_id) AS partnerId
     MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
     WHERE k.id = partnerId AND toString(k.is_company) = 'true'
-    WITH n, k, split(k.email, '@')[1] AS domain
+    WITH n, k, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH n, k, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain
     WITH DISTINCT n, k, domain
@@ -299,7 +305,8 @@
     WITH n, toString(n.res_id) AS leadId
     MATCH (b2:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
     WHERE o.id = leadId
-    WITH n, o, split(k.email, '@')[1] AS domain
+    WITH n, o, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH n, o, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain
     WITH DISTINCT n, o, domain
@@ -323,7 +330,8 @@
     WITH n, toString(n.res_id) AS partnerId
     MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
     WHERE k.id = partnerId AND toString(k.is_company) = 'false'
-    WITH n, k, split(k.email, '@')[1] AS domain
+    // A contact's key is its email domain; toString() keeps an email-less contact from throwing.
+    WITH n, k, split(toString(k.email), '@')[1] AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain
     WITH DISTINCT n, k, domain
@@ -355,7 +363,8 @@
   cypher: |
     MATCH (b:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
     WHERE o.won_status = 'pending'
-    WITH o, split(k.email, '@')[1] AS domain
+    WITH o, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH o, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WHERE c.accountKey = domain
     WITH domain, collect(DISTINCT [o.id, o.name, o.expected_revenue]) AS dealRows,
