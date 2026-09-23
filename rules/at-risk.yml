@@ -38,15 +38,30 @@ properties:
   riskLongestThread:  { type: int,      description: "Replies on the longest open case, when it has run past the threshold." }
   riskHighPriorityCases: { type: int,   description: "Open cases marked high or urgent." }
   riskUnownedBilling: { type: boolean,  description: "True when billing invoices this account and the CRM has no record of it." }
+# BOOK SWEEPS, THEN RIDE THE SPINE — the same door inversion the fact views in ../views were
+# built on, and the engine's answer to embabel/me#1489. Written as `(a:CustomerAccount)-[:HAS_CASE]->(c)`
+# alone, a demand fetches once PER ACCOUNT, which is refused above `maxAnchors` (200): at 2,030
+# accounts every demand failed, the bodies matched nothing, and the view answered "none". Each
+# demand below first sweeps ONE door on the book (the desk, the billing books, the CRM book) and
+# then names the vocabulary edge from the account to the SAME alias; that edge is declared
+# `ridesHub: true` in its realm, so the engine links each account to its records by the spine's
+# own key instead of fetching, and the bodies traverse the edges they always did. The desk sweep
+# is `all` because the rules count `pending` cases as open, and every demand PROJECTS what it
+# sweeps: a demand that only asks whether something exists is fetched as an existence check —
+# one page — and the bodies then see 25 of 688 cases.
 requires:
-  - materialize: "MATCH (a:CustomerAccount)-[:HAS_CASE]->(:SupportCase) RETURN 1"
-    description: "Each account's support cases."
-  - materialize: "MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(:BillingInvoice) RETURN 1"
-    description: "Each account's invoices."
-  - materialize: "MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_SUBSCRIPTION]->(:BillingSubscription) RETURN 1"
-    description: "Each account's subscriptions."
-  - materialize: "MATCH (a:CustomerAccount)-[:TRACKED_AS]->(:CrmAccount)-[:HAS_OPPORTUNITY]->(:Opportunity) RETURN 1"
-    description: "Each account's deals."
+  - materialize: "MATCH (d:ChatwootDesk {status:'all'})-[:HAS_CASE]->(c:SupportCase) MATCH (a:CustomerAccount)-[:HAS_CASE]->(c) RETURN c.id AS id"
+    description: "Every case on the desk, linked to its account by the account's domain."
+  - materialize: "MATCH (b:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:BillingCustomer) MATCH (a:CustomerAccount)-[:BILLED_AS]->(lc) RETURN lc.id AS id"
+    description: "Every billing customer, linked to its account by the customer's url."
+  - materialize: "MATCH (b:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:BillingCustomer) MATCH (b)-[:HAS_INVOICE]->(i:BillingInvoice) MATCH (lc)-[:HAS_INVOICE]->(i) RETURN i.id AS id"
+    description: "Every invoice on the books, linked to its billing customer."
+  - materialize: "MATCH (b:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:BillingCustomer) MATCH (b)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription) MATCH (lc)-[:HAS_SUBSCRIPTION]->(s) RETURN s.id AS id"
+    description: "Every subscription on the books, linked to its billing customer."
+  - materialize: "MATCH (b:OdooBook {scope:'all'})-[:HAS_CUSTOMER]->(k:CrmAccount) MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k) RETURN k.id AS id"
+    description: "Every CRM customer, linked to its account by the customer's website."
+  - materialize: "MATCH (b:OdooBook {scope:'all'})-[:HAS_CUSTOMER]->(k:CrmAccount) MATCH (b)-[:HAS_ANY_LEAD]->(o:Opportunity) MATCH (k)-[:HAS_OPPORTUNITY]->(o) RETURN o.id AS id"
+    description: "Every opportunity on the CRM book, linked to its customer."
 rules:
   - derive: "(a:AtRiskAccount {riskOwingAndWaiting: owed})"
     from: |
