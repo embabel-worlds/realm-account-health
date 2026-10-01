@@ -1,0 +1,26 @@
+# Steward: the colleague who keeps account trouble in front of the person who owns the account.
+#
+# PROPOSED, NOT APPOINTED. A realm cannot name who answers for an agent or put it on duty — the
+# loader drops both — so this arrives off duty with no sponsor. A person adopts it by sponsoring
+# it, signing it, and putting it on duty, observing first.
+#
+# Two duties and no routine. What Steward keeps true is a CONDITION over the books, checked on a
+# schedule; nothing about account health arrives as a single event worth reacting to. Each duty's
+# `holds` is a view in views/agents.yml whose rows are the violations, so an empty answer is the
+# duty kept. A duty's repair — the requests that would fix a violation — arrives with requests
+# and approvals (business agents step 3), so none is named yet.
+name: steward
+job: Keeps every customer account's trouble in front of the person who owns it, before it costs us the account.
+routing: >-
+  Ask me about account health: which customers are at risk and why, whether anyone has picked
+  them up, and which risky accounts renew soon without a call booked.
+state: active
+duties:
+  - name: at-risk-acknowledged
+    text: Always — every at-risk account has a follow-up scheduled on it in the CRM.
+    holds: StewardUnacknowledgedRisk
+    every: "0 0 9 * * MON-FRI"
+  - name: renewal-call-booked
+    text: Always — every at-risk account renewing within 60 days has a call booked before it renews.
+    holds: StewardRenewalsWithoutCall
+    every: "0 0 9 * * MON"
