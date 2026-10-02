@@ -7,19 +7,23 @@
 # Two duties and no routine. What Steward keeps true is a CONDITION over the books, checked on a
 # schedule; nothing about account health arrives as a single event worth reacting to. Each duty's
 # `holds` is a view in views/agents.yml whose rows are the violations, so an empty answer is the
-# duty kept. A duty's repair — the requests that would fix a violation — arrives with requests
-# and approvals (business agents step 3), so none is named yet.
+# duty kept. The at-risk duty's repair, acknowledge-risk, schedules a follow-up for one account.
 name: steward
 job: Keeps every customer account's trouble in front of the person who owns it, before it costs us the account.
 routing: >-
   Ask me about account health: which customers are at risk and why, whether anyone has picked
   them up, and which risky accounts renew soon without a call booked.
 state: active
+# ASKS FIRST, like Chaser: a follow-up it schedules lands in a salesperson's CRM, so each one is a
+# request a person approves until its sponsor signs a wider grant.
+authority:
+  default: request
 duties:
   - name: at-risk-acknowledged
     text: Always — every at-risk account has a follow-up scheduled on it in the CRM.
     holds: StewardUnacknowledgedRisk
     every: "0 0 9 * * MON-FRI"
+    repair: acknowledge-risk
   - name: renewal-call-booked
     text: Always — every at-risk account renewing within 60 days has a call booked before it renews.
     holds: StewardRenewalsWithoutCall
