@@ -32,12 +32,18 @@ if (failed.warnings.length || chasing.warnings.length) {
   // A source that failed or truncated reads as "nothing failed" or "nobody is chasing", and the
   // second would chase twice. Saying nothing is the safe answer to a partial read.
   console.log(`not chasing on a partial read: ${[...failed.warnings, ...chasing.warnings].join('; ')}`)
-  return { chased: [], skipped: [] }
+  return { chased: [], asked: [], skipped: [] }
 }
 
 const already = chasing.rows.map((r: Record<string, unknown>) => String(r.summary ?? ''))
 const due = new Date(new Date(now).getTime() + FOLLOW_UP_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+/* A request the gateway answered with instead of making the call, when the agent may only ask. */
+function isRequest(answer: unknown): answer is { requested: string; status: string } {
+  return typeof answer === 'object' && answer !== null && 'requested' in answer
+}
+
 const chased: string[] = []
+const asked: string[] = []
 const skipped: string[] = []
 
 for (const [n, row] of failed.rows.entries()) {
@@ -54,11 +60,18 @@ for (const [n, row] of failed.rows.entries()) {
     // Bound into program state so the row comes back as an OdooCustomer, with its methods.
     state.set(`failed_${n}`, row.customer)
     const customer = state.get(`failed_${n}`)
-    await customer.addNote(note)
-    await customer.scheduleFollowUp({ summary: `Chase failed payment ${invoice}`, due, note })
+    const noted = await customer.addNote(note)
+    const followed = await customer.scheduleFollowUp({ summary: `Chase failed payment ${invoice}`, due, note })
+    // An agent that may only ASK gets requests back, not ids: say which happened, so the run's
+    // record does not claim a chase a person has yet to approve.
+    if (isRequest(noted) || isRequest(followed)) {
+      console.log(`asked to chase ${invoice} on ${row.domain}: ${[noted, followed].filter(isRequest).map((r) => r.status).join(', ')}`)
+      asked.push(invoice)
+      continue
+    }
     console.log(`chased ${invoice} on ${row.domain}`)
   }
   chased.push(invoice)
 }
 if (failed.rows.length === 0) console.log('no failed payment on a customer the CRM knows — nothing to chase')
-return { chased, skipped }
+return { chased, asked, skipped }
