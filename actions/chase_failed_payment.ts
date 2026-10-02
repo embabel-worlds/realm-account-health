@@ -35,6 +35,42 @@ if (failed.warnings.length || chasing.warnings.length) {
   return { chased: [], asked: [], skipped: [] }
 }
 
+/*
+ * The customer's open support cases, and when the customer last wrote on each: a chase that takes
+ * no notice of an open case reads as not listening. Those messages are written by the customer, so
+ * the host marks this run as having read text from outside the business, and every request it
+ * raises tells the approver the draft came after it. A desk that cannot be read costs the mention,
+ * not the chase.
+ */
+const threads = await gateway.cypher.query({ cypher: `
+  MATCH (lb:LagoBooks {scope:'all'})-[:HAS_INVOICE]->(i:LagoInvoice)
+  WHERE i.paymentStatus = 'failed'
+  WITH DISTINCT split(i.customerUrl, '//')[1] AS domain
+  MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+  WHERE c.accountKey = domain
+  MATCH (c)-[:HAS_MESSAGE]->(m:ChatwootMessage)
+  RETURN domain, c.id AS conversation, c.subject AS subject, m.messageType AS type, m.sentAt AS at
+` })
+if (threads.warnings.length) console.log(`open cases not mentioned: ${threads.warnings.join('; ')}`)
+/*
+ * One line per open case on [domain] that the customer wrote on, or nothing. Filtered here rather
+ * than in the query: Chatwoot cannot filter a thread by sender, and a filter it cannot absorb comes
+ * back as a warning, which this routine reads as a partial answer. Type 0 is a message in.
+ */
+function openCases(domain: unknown): string {
+  if (threads.warnings.length) return ''
+  const lastHeard = new Map<string, { subject: string; at: number }>()
+  for (const t of threads.rows as Record<string, unknown>[]) {
+    if (t.domain !== domain || Number(t.type) !== 0) continue
+    const seen = lastHeard.get(String(t.conversation))
+    if (!seen || Number(t.at) > seen.at) lastHeard.set(String(t.conversation), { subject: String(t.subject), at: Number(t.at) })
+  }
+  if (lastHeard.size === 0) return ''
+  const said = [...lastHeard].map(([id, c]) =>
+    `#${id} "${c.subject}" (customer last wrote ${new Date(c.at * 1000).toISOString().slice(0, 10)})`)
+  return ` Open with support: ${said.join('; ')}.`
+}
+
 const already = chasing.rows.map((r: Record<string, unknown>) => String(r.summary ?? ''))
 const due = new Date(new Date(now).getTime() + FOLLOW_UP_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 /* A request the gateway answered with instead of making the call, when the agent may only ask. */
@@ -53,7 +89,7 @@ for (const [n, row] of failed.rows.entries()) {
     continue
   }
   const owed = `${row.currency} ${Number(row.owed).toLocaleString('en-US')}`
-  const note = `Payment for invoice ${invoice} (${owed}) failed. Chasing: follow-up due ${due}.`
+  const note = `Payment for invoice ${invoice} (${owed}) failed. Chasing: follow-up due ${due}.${openCases(row.domain)}`
   if (dryRun) {
     console.log(`WOULD note and follow up on ${row.domain}: ${note}`)
   } else {
