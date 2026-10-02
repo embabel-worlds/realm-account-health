@@ -1,0 +1,7 @@
+# Steward's repair for its at-risk-acknowledged duty: one follow-up per at-risk account nobody has
+# picked up. Run by the duty, never on its own — so no trigger and no schedule.
+stepType: com.embabel.world.plan.spec.TypeScriptActionSpec
+name: acknowledge-risk
+description: For one at-risk account nobody is following up, schedule a follow-up on it in the CRM for its owner, with the reasons
+module: acknowledge_risk.ts
+autonomous: false
