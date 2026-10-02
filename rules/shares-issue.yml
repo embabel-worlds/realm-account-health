@@ -21,9 +21,20 @@ properties:
   shared: { type: int, description: "How many product areas the two accounts both have an open case in." }
   areas:  { type: any, description: "The shared product areas, as the helpdesk labels them." }
 maxPairs: 5000
+# BOOK SWEEPS, THEN RIDE THE SPINE — the same door inversion the fact views in ../views were
+# built on, and the engine's answer to embabel/me#1489. Written as `(a:CustomerAccount)-[:HAS_CASE]->(c)`
+# alone, a demand fetches once PER ACCOUNT, which is refused above `maxAnchors` (200): at 2,030
+# accounts every demand failed, the bodies matched nothing, and the view answered "none". Each
+# demand below first sweeps ONE door on the book (the desk, the billing books, the CRM book) and
+# then names the vocabulary edge from the account to the SAME alias; that edge is declared
+# `ridesHub: true` in its realm, so the engine links each account to its records by the spine's
+# own key instead of fetching, and the bodies traverse the edges they always did. The desk sweep
+# is `all` because the rules count `pending` cases as open, and every demand PROJECTS what it
+# sweeps: a demand that only asks whether something exists is fetched as an existence check —
+# one page — and the bodies then see 25 of 688 cases.
 requires:
-  - materialize: "MATCH (a:CustomerAccount)-[:HAS_CASE]->(:SupportCase) RETURN 1"
-    description: "Each account's support cases."
+  - materialize: "MATCH (d:ChatwootDesk {status:'all'})-[:HAS_CASE]->(c:SupportCase) MATCH (a:CustomerAccount)-[:HAS_CASE]->(c) RETURN c.id AS id"
+    description: "Every case on the desk, linked to its account by the account's domain."
 rules:
   - derive: "(a)-[:SHARES_ISSUE {shared: n, areas: areas}]->(b)"
     from: |
