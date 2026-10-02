@@ -103,6 +103,13 @@
   # at 150 and ~43s at all 667 open-case accounts (measured 2026-09-22), most of it graph work.
   # Raise the cap when the join is cheaper, not the judge.
   #
+  # THE JUDGE IS THE `workhorse` ROLE, not the query's own `vc_execution`. Whether a note "touches
+  # the same topic" as a case in other words is a reading judgement, and the per-row role (the
+  # cheapest model a world maps) got it wrong and unstably: on the seeded book it called Initech
+  # unaware although the owner's note names both its problems, and its in-order and rotated
+  # readings disagreed often enough to cost 4-8 calls a read. A role, never a model: the world
+  # decides what plays it.
+  #
   # SETTLE WHAT IS ALREADY KNOWN before the model is asked. An account sales never wrote about is
   # unaware by definition, and one whose case subject appears verbatim in a note is aware by the
   # same word test the Account Signals app applies — neither needs a model. The guard is the first
@@ -138,5 +145,5 @@
                          WHEN any(x IN caseRows WHERE toLower(written) CONTAINS toLower(x[1])) THEN 'aware' END,
            classify('OPEN SUPPORT PROBLEMS: ' + problems + '  ||  WHAT SALES HAS WRITTEN IN THE CRM: ' + CASE WHEN written = '' THEN '(nothing)' ELSE written END,
              'aware,unaware',
-             'Each item lists what a customer has open with SUPPORT, then everything SALES has written about that customer in the CRM (HTML tags are noise). Decide whether sales knows about the topic. aware: any CRM note touches the SAME TOPIC as any support item, in any words - for example a support item about data residency and a note saying the customer is concerned about GDPR or data residency, or a support item asking for a report builder and a note about custom reporting needs. unaware: no note touches any of the support topics; the notes are only about deals, renewals, stakeholders or the company in general.')) AS crmAwareness
+             'Each item lists what a customer has open with SUPPORT, then everything SALES has written about that customer in the CRM (HTML tags are noise). Decide whether sales knows about the topic. aware: any CRM note touches the SAME TOPIC as any support item, in any words - for example a support item about data residency and a note saying the customer is concerned about GDPR or data residency, or a support item asking for a report builder and a note about custom reporting needs. unaware: no note touches any of the support topics; the notes are only about deals, renewals, stakeholders or the company in general.', {ai: {model: 'workhorse'}})) AS crmAwareness
     ORDER BY account
