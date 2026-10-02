@@ -46,6 +46,34 @@ say which arm was true for an account and that nobody can extend. As rules, each
 independent, the reasons are read off the account, and another realm — a project tracker — can add
 "work we promised them is stuck" as a clause **from its own package**.
 
+## Two colleagues: Steward and Chaser
+
+The realm proposes two agents, in `agents/`. They arrive off duty with nobody answering for them:
+a realm cannot appoint a sponsor or put its own agent to work, so adopting one is a person's
+decision — sponsor it, sign it, and put it on duty, observing first.
+
+| Agent | Job | Duties (the view whose rows are violations) | Routine |
+|---|---|---|---|
+| Steward | keeps account trouble in front of the account's owner | every at-risk account has a follow-up scheduled (`StewardUnacknowledgedRisk`); every at-risk renewal inside 60 days has a call booked (`StewardRenewalsWithoutCall`) | none |
+| Chaser | makes sure what we are owed is chased, and what we sold is billed | no invoice 14 days overdue goes unchased (`ChaserUnchasedOverdue`); every account with a won deal has an active subscription (`ChaserWonWithoutSubscription`) | `chase-failed-payment` |
+
+The duty views are in `views/agents.yml`; an empty answer is the duty kept. Duties are declared
+and shown today, and run once duties do (business agents step 4).
+
+**Chaser's routine** notes a failed payment on the customer in the CRM and schedules a follow-up
+to chase it, using realm-odoo's `addNote` and `scheduleFollowUp`. It skips any invoice a
+follow-up already names, whoever scheduled it, so it is safe to run again. It fires on
+`view.ChaserFailedPayments.changed`, which needs a watch on that view delivering as a signal —
+a watch belongs to whoever wants it, so a realm cannot ship one. Adopting Chaser means creating it:
+
+```sh
+curl -X POST "$APPLIANCE/api/v1/watches" -H 'Content-Type: application/json' -u "$AUTH" \
+  -d '{"lensId":"ChaserFailedPayments","cron":"0 */15 * * * *","delivery":{"channel":"signal"}}'
+```
+
+**Observing is the routine's own promise.** On duty but observing, a routine is told `dryRun`
+and must not write; the runtime does not stop it. `chase-failed-payment` guards both writes.
+
 ## Needs
 
 - `realm-business-vocabulary` (the `CustomerAccount` spine and the shared types), then one realm

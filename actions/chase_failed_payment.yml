@@ -1,0 +1,14 @@
+# Chaser's routine: a payment that fails is chased the day it fails, in the CRM, where the
+# account's owner will see it.
+#
+# A SIGNAL, not a schedule: a failed payment is an event, and a daily sweep would chase it up to
+# a day late. The signal is a watch on the ChaserFailedPayments view, which raises
+# `view.ChaserFailedPayments.changed` when a row appears. A realm cannot ship that watch — a
+# watch belongs to the person who wants it — so adopting Chaser means creating it; the README
+# says how.
+stepType: com.embabel.world.plan.spec.TypeScriptActionSpec
+name: chase-failed-payment
+description: When a payment fails, note it on the customer in the CRM and schedule a follow-up to chase it
+module: chase_failed_payment.ts
+signalType: view.ChaserFailedPayments.changed
+autonomous: false

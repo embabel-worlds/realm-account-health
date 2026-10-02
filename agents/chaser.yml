@@ -1,0 +1,25 @@
+# Chaser: the colleague who makes sure what we are owed is chased, and what we sold is billed.
+#
+# PROPOSED, NOT APPOINTED — see steward.yml; the same holds here.
+#
+# Two duties and one routine. The duties are conditions over the books (an overdue invoice nobody
+# is chasing; a won deal that is not billing). The routine is the event: a payment fails, and it
+# is chased the same day. Its trigger is a watch on ChaserFailedPayments, which whoever adopts
+# Chaser creates; see the README.
+name: chaser
+job: Makes sure every invoice we are owed is being chased, and every deal we win is being billed.
+routing: >-
+  Ask me about receivables: who owes us, what is overdue and whether anyone is chasing it, which
+  payments failed, and whether a won deal is billing yet.
+state: active
+routines:
+  - action: chase-failed-payment
+duties:
+  - name: overdue-chased
+    text: Never — an invoice more than 14 days overdue that nobody is chasing.
+    holds: ChaserUnchasedOverdue
+    every: "0 0 8 * * MON-FRI"
+  - name: won-deal-billing
+    text: Always — every account with a deal won in the CRM has an active subscription in billing.
+    holds: ChaserWonWithoutSubscription
+    every: "0 0 8 * * MON"

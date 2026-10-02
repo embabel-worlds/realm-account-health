@@ -1,0 +1,128 @@
+# WHAT THE TWO COLLEAGUES WATCH. Each view here is the `holds:` of a duty in agents/, and its
+# rows are the duty's VIOLATIONS: an empty answer is the duty kept. That is the whole contract a
+# duty has with its view, so each one is written to be read that way — no row for anything that
+# is fine, one row per thing somebody should act on, and enough on the row to act without
+# asking again.
+#
+# They sweep the books and join graph-side, like the views in health.yml and for the same reason:
+# a walk out from each account refuses above ~200 accounts.
+#
+# A SET, THEN A NEGATION. "No follow-up exists" is the shape of most of these, and an OPTIONAL
+# MATCH across a sweep is the one form health.yml records as unreliable. So the things that DO
+# exist are collected into a list first — one row however many there are, an empty list when
+# there are none — and the accounts are then matched with `NOT ... IN` that list.
+
+- name: StewardUnacknowledgedRisk
+  description: >-
+    Accounts at risk that nobody has picked up: no follow-up is scheduled on the company in the
+    CRM. One row per account, with every reason it is at risk. THE answer for "which at-risk
+    accounts has nobody acknowledged" and the violations of Steward's first duty. An at-risk
+    account the CRM has never heard of is always here: it cannot be followed up where it is not.
+  # Acknowledged means a FOLLOW-UP, not a note. A note says somebody knew; a scheduled activity
+  # says somebody will do something by a date, which is what "picked up" means to the account's
+  # owner — and it is what Steward's repair proposes, so the duty and its repair agree.
+  cypher: |
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_ACTIVITY]->(t:OdooActivity)
+    WHERE t.res_model = 'res.partner'
+    WITH collect(DISTINCT toString(t.res_id)) AS followed
+    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
+    WITH followed, k, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH followed, k, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
+    WITH collect(DISTINCT CASE WHEN k.id IN followed THEN domain END) AS acknowledged
+    MATCH (a:AtRiskAccount)
+    WHERE NOT a.accountKey IN acknowledged
+    RETURN a.accountKey AS accountKey, a.name AS account,
+           a.riskFailedPayments AS failedPayments, a.riskOwingAndWaiting AS owingWhileCaseOpen,
+           a.riskSellingIntoTrouble AS pipelineIntoTrouble, a.riskHighPriorityCases AS highPriorityCases,
+           a.riskLongestThread AS longestThread, a.riskRenewsOn AS renewsOn,
+           a.riskUnownedBilling AS unknownToCrm
+    ORDER BY account
+
+- name: StewardRenewalsWithoutCall
+  description: >-
+    At-risk accounts that renew within 60 days and have no call booked with them between now and
+    the renewal. One row per account, with its renewal date. THE answer for "which risky renewals
+    have no call booked" and the violations of Steward's second duty.
+  # The renewal is the one at-risk carries: a renewal inside the rule's window while a case is
+  # open. A meeting counts when the COMPANY is an attendee; one booked with only a person at the
+  # company is not seen here, because a contact carries no website to key the account by.
+  cypher: |
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_MEETING]->(m:OdooMeeting)
+    WHERE m.start >= toString(date())
+    UNWIND m.partner_ids AS attendee
+    WITH collect(DISTINCT toString(attendee)) AS invited
+    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
+    WITH invited, k, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH invited, k, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
+    WITH collect(DISTINCT CASE WHEN k.id IN invited THEN domain END) AS booked
+    MATCH (a:AtRiskAccount)
+    WHERE a.riskRenewsOn IS NOT NULL
+      AND substring(a.riskRenewsOn, 0, 10) <= toString(date() + duration('P60D'))
+      AND NOT a.accountKey IN booked
+    RETURN a.accountKey AS accountKey, a.name AS account, substring(a.riskRenewsOn, 0, 10) AS renewsOn
+    ORDER BY renewsOn
+
+- name: ChaserUnchasedOverdue
+  description: >-
+    Invoices more than 14 days past due, unpaid, on an account nobody is chasing: no follow-up is
+    scheduled on the company in the CRM. One row per invoice, most owed first. THE answer for
+    "which overdue invoices is nobody chasing" and the violations of Chaser's first duty.
+  # Overdue by BILLING's own due date. On a book loaded into Lago that date is the load date plus
+  # the payment terms — Lago cannot backdate an invoice — so a freshly loaded book has nothing
+  # 14 days overdue yet, and this view says so by answering empty.
+  cypher: |
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_ACTIVITY]->(t:OdooActivity)
+    WHERE t.res_model = 'res.partner'
+    WITH collect(DISTINCT toString(t.res_id)) AS followed
+    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
+    WITH followed, k, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH followed, k, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
+    WITH collect(DISTINCT CASE WHEN k.id IN followed THEN domain END) AS chased
+    MATCH (lb:LagoBooks {scope:'all'})-[:HAS_INVOICE]->(i:LagoInvoice)
+    WHERE i.paymentStatus <> 'succeeded' AND i.dueOn IS NOT NULL
+      AND i.dueOn < toString(date() - duration('P14D'))
+    WITH chased, i, split(i.customerUrl, '//')[1] AS domain
+    WHERE NOT domain IN chased
+    MATCH (a:CustomerAccount {accountKey: domain})
+    RETURN a.accountKey AS accountKey, a.name AS account, i.number AS invoice, i.dueOn AS dueOn,
+           i.amountDueCents / 100.0 AS owed, i.currency AS currency, i.paymentStatus AS paymentStatus,
+           i.sourceUrl AS invoiceUrl
+    ORDER BY owed DESC
+
+- name: ChaserWonWithoutSubscription
+  description: >-
+    Accounts with a deal won in the CRM and no active subscription in billing: sold, and not
+    being billed. One row per account, with the won deals by name. THE answer for "which won
+    deals are not billing" and the violations of Chaser's second duty.
+  cypher: |
+    MATCH (lb:LagoBooks {scope:'all'})-[:HAS_SUBSCRIPTION]->(s:LagoSubscription)
+    WHERE s.status = 'active'
+    WITH collect(DISTINCT s.customerExternalId) AS subscribed
+    MATCH (lb2:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:LagoCustomer)
+    WITH collect(DISTINCT CASE WHEN lc.externalId IN subscribed THEN split(lc.url, '//')[1] END) AS billing
+    MATCH (b:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
+    WHERE o.won_status = 'won'
+    WITH billing, o, split(split(toString(k.website), '//')[-1], '/')[0] AS host
+    WITH billing, o, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
+    WHERE NOT domain IN billing
+    MATCH (a:CustomerAccount {accountKey: domain})
+    RETURN a.accountKey AS accountKey, a.name AS account, collect(o.name) AS wonDeals,
+           sum(o.expected_revenue) AS wonValue
+    ORDER BY wonValue DESC
+
+- name: ChaserFailedPayments
+  description: >-
+    Every invoice billing tried to collect and could not, with its account. One row per invoice.
+    THE answer for "which payments failed". Watch this view to fire Chaser's routine when a
+    payment newly fails.
+  # The routine's trigger, not a duty: a failed payment is an EVENT to react to the day it
+  # happens, where an unchased overdue invoice is a CONDITION to keep false. A watch on this view
+  # turns a new row into `view.ChaserFailedPayments.changed`, which the routine listens for.
+  cypher: |
+    MATCH (lb:LagoBooks {scope:'all'})-[:HAS_INVOICE]->(i:LagoInvoice)
+    WHERE i.paymentStatus = 'failed'
+    WITH i, split(i.customerUrl, '//')[1] AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
+    RETURN a.accountKey AS accountKey, a.name AS account, i.number AS invoice,
+           i.amountDueCents / 100.0 AS owed, i.currency AS currency, i.sourceUrl AS invoiceUrl
+    ORDER BY account, invoice
