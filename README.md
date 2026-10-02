@@ -72,8 +72,8 @@ curl -X POST "$APPLIANCE/api/v1/watches" -H 'Content-Type: application/json' -u 
 ```
 
 `keyPath` names the column that identifies a row; without it a watch cannot diff a table and every
-run ends `RESULT_NOT_DIFFABLE`. Until embabel/me#1834 is fixed the signal reaches the rail but not
-the routine, so creating the watch is safe and does nothing yet.
+run ends `RESULT_NOT_DIFFABLE`. Events must be on (`assistant.events.enabled`) for the signal to
+reach the routine. The routine's output is in Activity, not in the server's log.
 
 **Observing is the routine's own promise.** On duty but observing, a routine is told `dryRun`
 and must not write; the runtime does not stop it. `chase-failed-payment` guards both writes.
