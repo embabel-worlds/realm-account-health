@@ -68,8 +68,12 @@ a watch belongs to whoever wants it, so a realm cannot ship one. Adopting Chaser
 
 ```sh
 curl -X POST "$APPLIANCE/api/v1/watches" -H 'Content-Type: application/json' -u "$AUTH" \
-  -d '{"lensId":"ChaserFailedPayments","cron":"0 */15 * * * *","delivery":{"channel":"signal"}}'
+  -d '{"lensId":"ChaserFailedPayments","cron":"0 */15 * * * *","delivery":{"channel":"signal"},"diffSpec":{"keyPath":"invoice"}}'
 ```
+
+`keyPath` names the column that identifies a row; without it a watch cannot diff a table and every
+run ends `RESULT_NOT_DIFFABLE`. Until embabel/me#1834 is fixed the signal reaches the rail but not
+the routine, so creating the watch is safe and does nothing yet.
 
 **Observing is the routine's own promise.** On duty but observing, a routine is told `dryRun`
 and must not write; the runtime does not stop it. `chase-failed-payment` guards both writes.
