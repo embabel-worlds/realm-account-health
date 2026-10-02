@@ -75,8 +75,10 @@ curl -X POST "$APPLIANCE/api/v1/watches" -H 'Content-Type: application/json' -u 
 run ends `RESULT_NOT_DIFFABLE`. Events must be on (`assistant.events.enabled`) for the signal to
 reach the routine. The routine's output is in Activity, not in the server's log.
 
-**Observing is the routine's own promise.** On duty but observing, a routine is told `dryRun`
-and must not write; the runtime does not stop it. `chase-failed-payment` guards both writes.
+**Observing is enforced by the appliance**, which refuses an observing routine's writes and records
+them as calls it would have made (embabel/me#1840). **On duty, Chaser asks first**: its proposed
+authority makes each CRM note and follow-up a request a person approves in the Approvals window
+(embabel/me#1854), until its sponsor signs a wider grant.
 
 ## Needs
 

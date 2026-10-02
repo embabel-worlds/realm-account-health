@@ -12,6 +12,15 @@ routing: >-
   Ask me about receivables: who owes us, what is overdue and whether anyone is chasing it, which
   payments failed, and whether a won deal is billing yet.
 state: active
+# ASKS FIRST. Chaser writes in the CRM people work in, so every write it makes is a request a
+# person approves until its sponsor decides otherwise — the note on a customer, the follow-up it
+# schedules, and anything else that changes something (`default`). Proposed here, and in force only
+# once its sponsor signs it; a sponsor who trusts it can sign a wider grant.
+authority:
+  default: request
+  verbs:
+    odoo_partnerMessagePost: request
+    odoo_partnerActivitySchedule: request
 routines:
   - action: chase-failed-payment
 duties:
