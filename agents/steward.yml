@@ -13,6 +13,12 @@ job: Keeps every customer account's trouble in front of the person who owns it, 
 routing: >-
   Ask me about account health: which customers are at risk and why, whether anyone has picked
   them up, and which risky accounts renew soon without a call booked.
+# TALKED TO, IT READS THE BOOKS. Asked about an account — by a person or by Chaser — Steward answers
+# from the CRM, the helpdesk and billing through this realm's views and the graph, and never from
+# mail: an answer about whether an account is at risk has to come from what the books say now.
+conversation:
+  realms: [account-health, business-vocabulary, odoo, chatwoot, lago]
+  builtins: [views, graph]
 state: active
 # ASKS FIRST, like Chaser: a follow-up it schedules lands in a salesperson's CRM, so each one is a
 # request a person approves until its sponsor signs a wider grant.

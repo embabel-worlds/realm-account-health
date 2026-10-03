@@ -84,24 +84,28 @@ const skipped: string[] = []
 
 /*
  * BEFORE CHASING, ASK THE COLLEAGUE WHO KNOWS THE ACCOUNT. Steward keeps account health; a chase
- * that lands on an account already at risk needs a lighter hand. The account goes as an attachment,
- * so Steward answers about it and not about a sentence. The answer is cited in the note, and an
- * account Steward calls at risk is chased with care. A host without colleague threads, or a Steward
- * that may not be asked, costs the question, never the chase.
+ * that lands on an account already at risk needs a lighter hand. The account's risk rows go as an
+ * attachment, run when asked, so Steward answers from what the books say and not from a search of
+ * its own that can miss. The answer is cited in the note, and an account Steward calls at risk is
+ * chased with care. A host without colleague threads, or a Steward that may not be asked, costs the
+ * question, never the chase.
  */
 async function askSteward(domain: unknown, name: unknown): Promise<string> {
   try {
     const asked = await gateway.threads.ask({
       agent: 'steward',
-      text: `Before I chase a failed payment from ${name}: is this account at risk, and why?`,
-      attachments: [{ kind: 'entity', label: 'CustomerAccount', id: String(domain), title: String(name ?? domain) }],
+      text: `Before I chase a failed payment from ${name}: is this account at risk, and why? ` +
+        `The attached rows are HealthAtRiskAccounts for it; no row means it is not at risk. ` +
+        `Begin your answer with AT RISK or NOT AT RISK, then the reason.`,
+      attachments: [{ kind: 'view', label: 'HealthAtRiskAccounts', args: { account: String(domain) }, title: `Risk for ${name ?? domain}` }],
     }) as { answered?: boolean, text?: string, refused?: string, threadId?: string, attachments?: { properties?: Record<string, unknown> }[] }
     if (!asked?.answered) {
       console.log(`steward not asked about ${domain}: ${asked?.refused ?? 'no answer'}`)
       return ''
     }
-    const atRisk = /at[ -]risk/i.test(asked.text ?? '') ||
-      (asked.attachments ?? []).some((a) => /risk/i.test(String(a.properties?.health ?? '')))
+    // The verdict is the answer's first words, as asked: "not at risk" contains "at risk", so a
+    // search of the prose would read every reassurance as a warning.
+    const atRisk = /^\W*at[ -]risk\b/i.test(asked.text ?? '')
     const cited = String(asked.text ?? '').replace(/\s+/g, ' ').slice(0, 240)
     return atRisk
       ? ` Chase with care: Steward says this account is at risk ("${cited}", thread ${asked.threadId}).`
