@@ -18,6 +18,9 @@ state: active
 # request a person approves until its sponsor signs a wider grant.
 authority:
   default: request
+# Chaser may ask whether an account is at risk before it chases a payment (#1779).
+colleagues:
+  mayBeMessagedBy: [chaser]
 duties:
   - name: at-risk-acknowledged
     text: Always — every at-risk account has a follow-up scheduled on it in the CRM.

@@ -21,6 +21,9 @@ authority:
   verbs:
     odoo_partnerMessagePost: request
     odoo_partnerActivitySchedule: request
+# Chaser asks Steward about an account before chasing it (#1779): Steward knows account health.
+colleagues:
+  mayMessage: [steward]
 routines:
   - action: chase-failed-payment
 duties:
