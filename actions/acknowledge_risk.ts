@@ -10,7 +10,25 @@
  * Its arguments carry no date: asked again the next day, the same follow-up is the same request,
  * waiting or already decided, never a second one.
  */
-const v = violation as Record<string, unknown>
+/*
+ * `violation` is bound by the DUTY that runs this, one violating row at a time. NOTHING else binds
+ * it, and the runner declares only the bindings it was given — so referencing it when it is absent
+ * throws a ReferenceError rather than yielding undefined. That is not a theoretical failure: this
+ * handler was reached on a chat turn, and the ReferenceError was surfaced as the assistant's reply,
+ * so somebody who had just said their wife died was answered with a Node stack trace.
+ *
+ * `typeof` is the guard that works for both shapes — an identifier the runner never declared, and
+ * one declared but not passed. Asked to run without a row, this says so and changes nothing.
+ */
+const row = typeof violation === 'undefined' ? null : (violation as Record<string, unknown>)
+if (!row) {
+  console.log(
+    'no violating row is bound: acknowledge-risk is run BY the at-risk-acknowledged duty, one row ' +
+      'at a time, and does nothing on its own',
+  )
+  return { acknowledged: null }
+}
+const v = row
 const domain = String(v.accountKey ?? '')
 if (!domain) {
   console.log('no account on this row — nothing to acknowledge')
@@ -48,7 +66,8 @@ const reasons = [
 
 const summary = `Acknowledge: ${company.name} is at risk`
 const note = `Steward found ${company.name} at risk and nobody following up: ${reasons.join('; ') || 'see its at-risk reasons'}.`
-if (dryRun) {
+// Guarded for the same reason as `violation`: a binding the runner was not given is not declared.
+if (typeof dryRun !== 'undefined' && dryRun) {
   console.log(`WOULD schedule on ${company.name}: ${note}`)
   return { acknowledged: domain }
 }

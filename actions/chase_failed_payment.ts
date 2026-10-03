@@ -72,7 +72,19 @@ function openCases(domain: unknown): string {
 }
 
 const already = chasing.rows.map((r: Record<string, unknown>) => String(r.summary ?? ''))
-const due = new Date(new Date(now).getTime() + FOLLOW_UP_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+/*
+ * `now` and `dryRun` are bindings the runner declares only when it provides them, so referencing
+ * one it was not given throws a ReferenceError rather than yielding undefined. This handler is
+ * signal-driven and normally gets both — but its sibling was reached outside the duty that binds
+ * ITS row, and answered a user with the resulting stack trace. A handler should not depend on being
+ * invoked the way its author expected.
+ *
+ * `now` has an obvious fallback and `dryRun` a safe one: do the work for real, which is what an
+ * unbound dryRun has always meant.
+ */
+const asOf = typeof now === 'undefined' ? new Date().toISOString() : now
+const chasingDryRun = typeof dryRun !== 'undefined' && dryRun
+const due = new Date(new Date(asOf).getTime() + FOLLOW_UP_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 /* A request the gateway answered with instead of making the call, when the agent may only ask. */
 function isRequest(answer: unknown): answer is { requested: string; status: string } {
   return typeof answer === 'object' && answer !== null && 'requested' in answer
@@ -125,7 +137,7 @@ for (const [n, row] of failed.rows.entries()) {
   const owed = `${row.currency} ${Number(row.owed).toLocaleString('en-US')}`
   const steward = await askSteward(row.domain, (row.customer as Record<string, unknown> | undefined)?.name ?? row.domain)
   const note = `Payment for invoice ${invoice} (${owed}) failed. Chasing: follow-up due ${due}.${openCases(row.domain)}${steward}`
-  if (dryRun) {
+  if (chasingDryRun) {
     console.log(`WOULD note and follow up on ${row.domain}: ${note}`)
   } else {
     // Bound into program state so the row comes back as an OdooCustomer, with its methods.
