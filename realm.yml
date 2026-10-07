@@ -10,6 +10,7 @@ version: 0.1.0
 # The views reconcile and the app works; rules and the question battery are still to come.
 maturity: experimental
 author: Rod Johnson
+category: customers
 tags:
   - crm
   - support
