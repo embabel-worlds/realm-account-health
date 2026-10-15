@@ -6,8 +6,10 @@
 # Both are MATERIALISED. A judgement is model work — batched twenty rows to a call, so the triage
 # at 150 cases is ~16 calls and ~10s cold (measured 2026-09-22) — and does not change until the
 # words do, so the rows are kept for the `ttl` and an app reads them instantly. "Now" for these
-# two views means "as of the last time they ran". The labels are repeatable: the judge runs at
-# temperature 0, so a refresh over unchanged words yields the same labels.
+# two views means "as of the last time they ran". The judge runs at temperature 0, but a label on
+# borderline words can still move between refreshes: twenty rows share a call, and what sits beside a
+# case in the batch shifts a close call (one case read blocked, degraded, blocked on three runs of
+# the same text, 2026-10-15). A label is an opinion with a definition attached, not a stored fact.
 #
 # A model can be wrong, and these were checked against the sources by hand. The awareness
 # judge called Rekall unaware although its CRM notes say "Custom reporting needs" and its case
@@ -17,9 +19,10 @@
 
 - name: HealthCaseTriage
   description: >-
-    Every open support case, judged from the customer's own words: IMPACT on their business
-    (blocked, degraded, inconvenienced, or merely asking for something) and their MOOD toward us
-    (frustrated, neutral, positive). THE answer for "which customers are really hurting", "which
+    Every open support case, judged from everything the customer has written on it: IMPACT on
+    their business (blocked, degraded, inconvenienced, or merely asking for something), read
+    across the whole thread with the latest words weighing most, and their MOOD toward us
+    (frustrated, neutral, positive), read from their most recent messages. THE answer for "which customers are really hurting", "which
     support cases are serious", "who is frustrated with us" and "which open cases matter" — a
     42-reply thread about dark mode is not trouble, and a 7-reply thread from a blocked customer
     is. Cases with no message from the customer are absent: there is nothing to judge.
@@ -55,6 +58,31 @@
   # The limit is a LITERAL, not a param: a materialized view may not declare params, because its
   # cache is keyed per user and not per argument tuple — the loader refuses one that does. Change
   # the number here and the next refresh picks it up.
+  #
+  # THE THREAD, NOT THE OPENING MESSAGE. Impact is judged on what the customer wrote across the
+  # whole case, oldest first, and mood on their last three messages only. The opening message
+  # says what the problem was when it was raised; a customer who opened politely and is on reply
+  # forty asking for an escalation is exactly who "who is frustrated with us" means, and a
+  # workaround found mid-thread turns blocked into degraded. Agents' replies, Chatwoot's activity
+  # lines and private notes are not the customer's words and are left out. The impact text is
+  # bounded — the opening message and the last seven — so the busiest threads, which are the ones
+  # this view ranks first, cannot blow out a batched call. The messages are SORTED before they are
+  # collected: the join returns them oldest first, but collect() promises no order and the view
+  # does not lean on one.
+  #
+  # The seeded book carries only each case's opening message — its source counted replies but
+  # did not hold them, and the Chatwoot loader refuses to invent a thread — so on that book the
+  # two texts are the same one message and these labels match the single-message reading they
+  # replaced (checked 2026-10-15). The view earns its keep on a real desk. `customerMessages`
+  # says how much of a thread was read, so a reader can tell a one-message judgement from one
+  # over forty.
+  #
+  # ORDERED BY THE JUDGEMENT, not by the count. The view exists to say that reply count is the wrong
+  # signal, so its rows cannot come out sorted by reply count with the dark-mode thread on top. The
+  # worst-hurting case is first: impact, then the desk's own priority (a human's call on the same
+  # question, and an urgent case outranks a high one whatever the model made of the words), then
+  # mood, and replies only to break ties. The two labels are judged in a WITH so the sort can see
+  # them — the same shape OdooDealTriage uses to filter on its triage label.
   cypher: |
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WITH c, c.accountKey AS domain
@@ -63,15 +91,25 @@
     MATCH (a:CustomerAccount {accountKey: domain})
     WITH a, c
     MATCH (c)-[:HAS_MESSAGE]->(m:SupportMessage)
-    WHERE m.messageType = 0
-    WITH a, c, collect(m.body)[0] AS said
+    WHERE m.messageType = 0 AND NOT coalesce(m.internal, false)
+    WITH a, c, m
+    ORDER BY m.sentAt, m.id
+    WITH a, c, collect(m.body) AS wrote
+    WITH a, c, size(wrote) AS customerMessages,
+         reduce(t = '', x IN wrote[0..1] + wrote[1..][-7..] | t + ' | ' + x) AS said,
+         reduce(t = '', x IN wrote[-3..] | t + ' | ' + x) AS saidLately
+    WITH a, c, customerMessages,
+         classify(said, 'blocked,degraded,inconvenienced,asking',
+           'Each item is what one business customer wrote across a support case about a software product: their messages oldest first, separated by |. Judge how much the problem hurts THEIR business NOW. A later message outweighs an earlier one: a workaround or a fix reported mid-thread lowers the impact, and a report that it got worse raises it. blocked: something they rely on does not work and they have no workaround. degraded: it works badly or intermittently, or a workaround is costing them. inconvenienced: a nuisance or cosmetic fault. asking: a question, or a request for something that does not exist yet.') AS impact,
+         classify(saidLately, 'frustrated,neutral,positive',
+           'Each item is the most recent thing one business customer wrote on a support case, up to three messages oldest first, separated by |. Judge the tone of the writer toward the vendor NOW from the words actually used, not from how serious the problem is.') AS mood
     RETURN a.accountKey AS accountKey, a.name AS account, c.id AS caseId, c.subject AS subject,
-           c.priority AS priority, c.replyCount AS replies, c.openedOn AS openedOn,
-           classify(said, 'blocked,degraded,inconvenienced,asking',
-             'Each item is what one business customer wrote when raising a support case about a software product. Judge how much the problem hurts THEIR business right now. blocked: something they rely on does not work and they have no workaround. degraded: it works badly or intermittently, or a workaround is costing them. inconvenienced: a nuisance or cosmetic fault. asking: a question, or a request for something that does not exist yet.') AS impact,
-           classify(said, 'frustrated,neutral,positive',
-             'Each item is what one business customer wrote when raising a support case. Judge the tone of the writer toward the vendor from the words actually used, not from how serious the problem is.') AS mood
-    ORDER BY replies DESC
+           c.priority AS priority, c.replyCount AS replies, customerMessages, c.openedOn AS openedOn,
+           impact, mood
+    ORDER BY CASE impact WHEN 'blocked' THEN 0 WHEN 'degraded' THEN 1 WHEN 'inconvenienced' THEN 2 ELSE 3 END,
+             CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+             CASE mood WHEN 'frustrated' THEN 0 WHEN 'neutral' THEN 1 ELSE 2 END,
+             replies DESC
 
 - name: HealthCrmAwareness
   description: >-
