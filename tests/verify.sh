@@ -163,7 +163,11 @@ Priya Raman, Head of Finance"""
     grows = gmail.get("data") or []
     check("a gmail sender resolves to no account", [None] * len(grows), [r.get("accountKey") for r in grows])
     told = json.dumps({k: v for k, v in gmail.items() if k != "data"}).lower()
-    check("and the response says it was declined", True, "declin" in told)
+    # A personal address can end two honest ways: the model names the company and the account
+    # spine declines it (PROJECTION_DECLINED), or the model, seeing a gmail address, names no
+    # company at all and the text is reported silent on it (PROJECTION_EMPTY). Either way the
+    # response must say why there is no account; it must not just be empty.
+    check("and the response says why there is no account", True, "declin" in told or "silent" in told)
     check("nothing projected was left behind", before, projected_count())
 print("ALL CHECKS PASS" if not fail else "SOME CHECKS FAILED"); sys.exit(fail)
 PY
