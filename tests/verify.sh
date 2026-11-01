@@ -8,6 +8,9 @@
 #       composed from the fact views, which is exactly how the app builds its signals
 #   L3  the app is served
 #   L4  the battery: questions in words reach the same figures, and the unanswerable stay so
+#   L5  text in: an email projected with ai.fromText resolves to the right account, reports the
+#       same open cases and owed as the fact views, declines a personal address, and leaves
+#       nothing behind. Needs an appliance with ai.fromText (embabel/me#3331): FROM_TEXT=1
 #
 #   APPLIANCE=http://127.0.0.1:11043 AUTH=user:pass sh tests/verify.sh
 set -e
@@ -118,5 +121,49 @@ for case in yaml.safe_load(open(qfile)):
     print(("  ok   " if ok else "  FAIL ") + q + " -> " + ", ".join(said))
     if not ok:
         fail = 1; print("       cypher: " + " ".join((a.get("cypher") or "").split())[:220])
+
+print("== L5: text in (views/from-text.yml) ==")
+if os.environ.get("FROM_TEXT") != "1":
+    # Said out loud rather than passed quietly: on an appliance without ai.fromText this level
+    # did not run, and a reader of the output must not take its absence for a pass.
+    print("  SKIPPED: set FROM_TEXT=1 on an appliance with ai.fromText (embabel/me#3331)")
+else:
+    def view_with(name, args):
+        return post("/api/v1/views/%s/invoke" % name, {"args": args})
+    def projected_count():
+        def one(label):
+            r = post("/api/v1/admin/kg/cypher", {"cypher": "MATCH (n:%s) RETURN count(n) AS n" % label})
+            return (r.get("rows") or [{"n": None}])[0]["n"]
+        return {label: one(label) for label in ("Attendee", "Issue")}
+    # northwind-traders.example is the seed book's "silent escalation" arc: an urgent case open
+    # and money owed, so both columns have something to be wrong about.
+    KEY = "northwind-traders.example"
+    EMAIL = """From: Priya Raman <priya.raman@northwind-traders.example>
+Subject: Month end is blocked again
+
+Hi — the invoice export is still failing and it is blocking our month-end close, third month
+running. Separately, Tom in IT says SSO keeps looping on Safari. Can someone call me today?
+Priya Raman, Head of Finance"""
+    before = projected_count()
+    res = view_with("HealthWhatThisEmailRaises", {"email": EMAIL})
+    rows = res.get("data") or []
+    check("email view answered", "SUCCEEDED", res.get("status"))
+    check("issues projected from the email", True, len(rows) >= 2)
+    check("every issue resolved to %s" % KEY, [KEY] * len(rows), [r.get("accountKey") for r in rows])
+    check("severities stay in the declared set", True, all(r.get("severity") in ("high", "medium", "low") for r in rows))
+    open_by_key = {r["accountKey"]: r for r in V["HealthOpenCasesByAccount"]}
+    owed_by_key = {r["accountKey"]: r for r in V["HealthReceivablesByAccount"]}
+    want_cases = sorted(set(open_by_key.get(KEY, {}).get("subjects") or []))
+    want_owed = round(float(owed_by_key[KEY]["owed"]), 2) if KEY in owed_by_key else 0.0
+    for r in rows:
+        check("open cases beside '%s'" % r.get("issue"), want_cases, sorted(r.get("openCases") or []))
+        check("owed beside '%s'" % r.get("issue"), want_owed, round(float(r.get("owed") or 0), 2))
+    # A personal address must come back DECLINED — said, not just an empty account column.
+    gmail = view_with("HealthWhatThisEmailRaises", {"email": EMAIL.replace("priya.raman@northwind-traders.example", "priya.raman@gmail.com")})
+    grows = gmail.get("data") or []
+    check("a gmail sender resolves to no account", [None] * len(grows), [r.get("accountKey") for r in grows])
+    told = json.dumps({k: v for k, v in gmail.items() if k != "data"}).lower()
+    check("and the response says it was declined", True, "declin" in told)
+    check("nothing projected was left behind", before, projected_count())
 print("ALL CHECKS PASS" if not fail else "SOME CHECKS FAILED"); sys.exit(fail)
 PY

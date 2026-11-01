@@ -92,13 +92,11 @@
 - name: HealthOpenCasesByAccount
   description: >-
     Per account: WHAT the open support cases are about — their subjects and ids, alongside the
-    same counts. The detail behind HealthOpenCaseCountsByAccount, for a named account or a short
-    list of them. Reads every open case it reports on, so ask it about the accounts you care
-    about rather than the whole book.
+    same counts. The detail behind HealthOpenCaseCountsByAccount, for every account with an open
+    case; it takes no parameters. To ask about one account, filter its rows by accountKey.
   outputLabel: AccountOpenCasesRow
-  # Desk sweep. The description below still says to ask this about the accounts you care about
-  # rather than the whole book — that was advice for the per-account form, which cost one call per
-  # account. It now reads the desk once whatever you ask it for.
+  # One sweep of the open desk, whatever is asked: cheaper than a call per account, so the view
+  # answers for the whole book rather than a named account.
   cypher: |
     MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
     WITH c, c.accountKey AS domain

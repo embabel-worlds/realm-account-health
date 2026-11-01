@@ -1,0 +1,40 @@
+# Types that exist only for as long as one question is being answered.
+#
+# A world type is something a product holds: a CustomerAccount, a SupportCase. These are not.
+# Nothing fetches an Attendee and nothing stores one; `ai.fromText` reads them out of a piece of
+# text — an email, meeting notes — for the length of one run, and they are gone when it ends.
+# `projected: true` is what says so, and it is load-bearing: without it these would be world
+# labels, and a world label in a projection pattern is RESOLVED against what the products hold,
+# never created (embabel/me#3331).
+#
+# The descriptions are not documentation. They are what the model is shown when it reads the
+# text, so "not a request or a wish" is what keeps "they want annual billing" out of Issue.
+
+- name: Attendee
+  projected: true
+  description: >-
+    Someone from the customer's side who wrote to us or was in the meeting: a person at the
+    customer, never someone on our own staff.
+  properties:
+    name: "Full name, as written."
+    role: "Job title, as stated. Empty when the text does not say."
+    email: "Their email address, when the text shows one."
+  relationships:
+    RAISED: { to: Issue, many: true, description: "Problems this person raised, including ones they pass on for a colleague (\"Tom in IT says…\")." }
+    WORKS_FOR: { to: CustomerAccount, many: false, description: "The customer account they work for." }
+
+- name: Issue
+  projected: true
+  description: >-
+    A problem the customer raised: something broken, blocked or wrong that they want fixed.
+    Not a request for something new, not a wish, not a question about pricing.
+  properties:
+    summary: "One line: what is wrong, in the customer's words."
+    severity:
+      type: string
+      enum: [high, medium, low]
+      description: >-
+        How much it blocks them. high: they cannot do their job or close their books.
+        medium: a workaround exists but it costs them. low: an annoyance.
+  relationships:
+    TRACKED_BY: { to: SupportCase, many: true, description: "Open support cases that already cover this problem." }

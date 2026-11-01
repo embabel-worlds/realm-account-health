@@ -1,0 +1,53 @@
+# Views that start from text instead of from an account.
+#
+# Every other view here starts at a CustomerAccount. These start at something a person pasted —
+# an email, meeting notes — and project it into the graph with `ai.fromText` (embabel/me#3331):
+# the people and the problems become Attendee and Issue nodes for the length of the run, and
+# the company they work for is RESOLVED to the CustomerAccount the products already hold, never
+# invented. From there it is an ordinary account question.
+#
+# Requires an appliance with ai.fromText. On one without it this view fails by name rather than
+# answering empty, which is the honest failure.
+
+- name: HealthWhatThisEmailRaises
+  description: >-
+    Paste a customer's email (with its From line) and see what it means for us: each problem
+    they raised, who raised it, the account they belong to, that account's open support cases
+    and what it owes. Nothing is stored — the email is read when asked. An account column that
+    is empty means the sender's company could not be matched to a customer (a personal address
+    such as gmail is declined on purpose), not that they owe nothing.
+  params:
+    email:
+      type: string
+      description: "The email as received, including the From line."
+  # Open cases and owed are defined exactly as HealthOpenCasesByAccount and
+  # HealthReceivablesByAccount define them (status 'open'; paymentStatus not 'succeeded',
+  # amountDueCents in cents), so tests/verify.sh can hold this view to those two.
+  cypher: |
+    CALL ai.fromText($email, '(p:Attendee)-[:RAISED]->(i:Issue), (p)-[:WORKS_FOR]->(a:CustomerAccount)')
+      YIELD p, i, a
+    OPTIONAL MATCH (a)-[:HAS_CASE]->(c:SupportCase)
+    WHERE c.status = 'open'
+    WITH p, i, a, collect(DISTINCT c.subject) AS openCases
+    OPTIONAL MATCH (a)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(inv:BillingInvoice)
+    WHERE inv.paymentStatus <> 'succeeded'
+    WITH p, i, a, openCases, sum(inv.amountDueCents) / 100.0 AS owed
+    RETURN p.name AS sender, p.role AS role, i.summary AS issue, i.severity AS severity,
+           a.accountKey AS accountKey, a.name AS account, openCases, owed
+
+- name: HealthLinkIssuesToCases
+  description: >-
+    A planning step, not a report: for each Issue projected from text, link it with TRACKED_BY to
+    the open support cases of the sender's account that are about the same problem, as judged by
+    the model. An Issue left with no TRACKED_BY is one nobody is working on yet. Run on its own it
+    links nothing, because Issues exist only inside the run that projected them; the planner
+    places it after a step that projects them (HealthWhatThisEmailRaises).
+  # `relevant` is the judgement, not a substring match: "invoice export failing" and "Nightly
+  # export failing - we cannot close the month" share no phrase worth matching on.
+  cypher: |
+    MATCH (li:Issue)<-[:RAISED]-(:Attendee)-[:WORKS_FOR]->(:CustomerAccount)-[:HAS_CASE]->(lc:SupportCase)
+    WHERE lc.status = 'open'
+    WITH li, relevant(lc, 'the same problem as: ' + li.summary) AS tracked
+    UNWIND tracked AS tc
+    CREATE (li)-[:TRACKED_BY]->(tc)
+    RETURN count(*) AS linked
