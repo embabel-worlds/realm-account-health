@@ -134,7 +134,7 @@ else:
         def one(label):
             r = post("/api/v1/admin/kg/cypher", {"cypher": "MATCH (n:%s) RETURN count(n) AS n" % label})
             return (r.get("rows") or [{"n": None}])[0]["n"]
-        return {label: one(label) for label in ("Attendee", "Issue")}
+        return {label: one(label) for label in ("Attendee", "CustomerIssue")}
     # northwind-traders.example is the seed book's "silent escalation" arc: an urgent case open
     # and money owed, so both columns have something to be wrong about.
     KEY = "northwind-traders.example"

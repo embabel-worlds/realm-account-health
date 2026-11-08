@@ -8,7 +8,10 @@
 # never created (embabel/me#3331).
 #
 # The descriptions are not documentation. They are what the model is shown when it reads the
-# text, so "not a request or a wish" is what keeps "they want annual billing" out of Issue.
+# text, so "not a request or a wish" is what keeps "they want annual billing" out of
+# CustomerIssue. The name is qualified because `Issue` is the dev vocabulary's label for a tracked
+# unit of work (realm-dev-vocabulary), and a label is global: a projected type that reused it
+# would be refused at load beside that realm, and would mean something else by the same word.
 
 - name: Attendee
   projected: true
@@ -20,10 +23,10 @@
     role: "Job title, as stated. Empty when the text does not say."
     email: "Their email address, when the text shows one."
   relationships:
-    RAISED: { to: Issue, many: true, description: "Problems this person raised, including ones they pass on for a colleague (\"Tom in IT says…\")." }
+    RAISED: { to: CustomerIssue, many: true, description: "Problems this person raised, including ones they pass on for a colleague (\"Tom in IT says…\")." }
     WORKS_FOR: { to: CustomerAccount, many: false, description: "The customer account they work for." }
 
-- name: Issue
+- name: CustomerIssue
   projected: true
   description: >-
     A problem the customer raised: something broken, blocked or wrong that they want fixed.

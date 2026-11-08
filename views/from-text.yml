@@ -2,7 +2,7 @@
 #
 # Every other view here starts at a CustomerAccount. These start at something a person pasted —
 # an email, meeting notes — and project it into the graph with `ai.fromText` (embabel/me#3331):
-# the people and the problems become Attendee and Issue nodes for the length of the run, and
+# the people and the problems become Attendee and CustomerIssue nodes for the length of the run, and
 # the company they work for is RESOLVED to the CustomerAccount the products already hold, never
 # invented. From there it is an ordinary account question.
 #
@@ -24,7 +24,7 @@
   # HealthReceivablesByAccount define them (status 'open'; paymentStatus not 'succeeded',
   # amountDueCents in cents), so tests/verify.sh can hold this view to those two.
   cypher: |
-    CALL ai.fromText($email, '(p:Attendee)-[:RAISED]->(i:Issue), (p)-[:WORKS_FOR]->(a:CustomerAccount)')
+    CALL ai.fromText($email, '(p:Attendee)-[:RAISED]->(i:CustomerIssue), (p)-[:WORKS_FOR]->(a:CustomerAccount)')
       YIELD p, i, a
     OPTIONAL MATCH (a)-[:HAS_CASE]->(c:SupportCase)
     WHERE c.status = 'open'
@@ -37,15 +37,15 @@
 
 - name: HealthLinkIssuesToCases
   description: >-
-    A planning step, not a report: for each Issue projected from text, link it with TRACKED_BY to
+    A planning step, not a report: for each CustomerIssue projected from text, link it with TRACKED_BY to
     the open support cases of the sender's account that are about the same problem, as judged by
-    the model. An Issue left with no TRACKED_BY is one nobody is working on yet. Run on its own it
-    links nothing, because Issues exist only inside the run that projected them; the planner
+    the model. A CustomerIssue left with no TRACKED_BY is one nobody is working on yet. Run on its own it
+    links nothing, because CustomerIssues exist only inside the run that projected them; the planner
     places it after a step that projects them (HealthWhatThisEmailRaises).
   # `relevant` is the judgement, not a substring match: "invoice export failing" and "Nightly
   # export failing - we cannot close the month" share no phrase worth matching on.
   cypher: |
-    MATCH (li:Issue)<-[:RAISED]-(:Attendee)-[:WORKS_FOR]->(:CustomerAccount)-[:HAS_CASE]->(lc:SupportCase)
+    MATCH (li:CustomerIssue)<-[:RAISED]-(:Attendee)-[:WORKS_FOR]->(:CustomerAccount)-[:HAS_CASE]->(lc:SupportCase)
     WHERE lc.status = 'open'
     WITH li, relevant(lc, 'the same problem as: ' + li.summary) AS tracked
     UNWIND tracked AS tc
