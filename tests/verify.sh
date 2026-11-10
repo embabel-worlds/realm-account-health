@@ -3,9 +3,12 @@
 # against their own product (their tests/verify.sh); this realm adds no source, so what it
 # must prove is different:
 #
+#   L0  the realm names no product: every label and relationship in its views and rules is the
+#       business vocabulary's, the spine's, or one this realm derives or projects itself
 #   L1  every view answers BY NAME, and the account join underneath is really there (non-zero)
 #   L2  the views agree with EACH OTHER — a conjunction view must equal the same conjunction
 #       composed from the fact views, which is exactly how the app builds its signals
+#   L2d the agents' duty views agree with the facts they are built from
 #   L3  the app is served
 #   L4  the battery: questions in words reach the same figures, and the unanswerable stay so
 #   L5  text in: an email projected with ai.fromText resolves to the right account, reports the
@@ -14,15 +17,19 @@
 #
 #   APPLIANCE=http://127.0.0.1:11043 AUTH=user:pass sh tests/verify.sh
 set -e
+# Either AUTH=user:pass or TOKEN=<appliance API key>. Both go to curl through a config file, so
+# neither appears on a command line where `ps` would show it.
+AUTHCFG=$(mktemp); trap 'rm -f "$AUTHCFG"' EXIT
+if [ -n "${TOKEN:-}" ]; then printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" > "$AUTHCFG"
+else printf 'user = "%s"\n' "${AUTH:?set AUTH (user:pass) or TOKEN}" > "$AUTHCFG"; fi
 APPLIANCE="${APPLIANCE:-http://127.0.0.1:11043}"
-: "${AUTH:?set AUTH (user:pass)}"
 DIR="$(dirname "$0")"
-APPLIANCE="$APPLIANCE" AUTH="$AUTH" python3 - "$DIR/questions.yml" <<'PY'
-import json, os, subprocess, sys, yaml
-base, auth, qfile = os.environ["APPLIANCE"], os.environ["AUTH"], sys.argv[1]
+APPLIANCE="$APPLIANCE" AUTH="$AUTHCFG" python3 - "$DIR/questions.yml" "$DIR/.." <<'PY'
+import glob, json, os, re, subprocess, sys, yaml
+base, auth, qfile, realm = os.environ["APPLIANCE"], os.environ["AUTH"], sys.argv[1], sys.argv[2]
 fail = 0
 def post(path, body):
-    out = subprocess.run(["curl", "-s", "-u", auth, "-X", "POST", base + path, "-H", "Content-Type: application/json",
+    out = subprocess.run(["curl", "-s", "-K", auth, "-X", "POST", base + path, "-H", "Content-Type: application/json",
                           "-d", json.dumps(body)], capture_output=True, text=True).stdout
     return json.loads(out, strict=False)
 def view(name):
@@ -36,12 +43,45 @@ def check(name, want, got):
     if not ok: fail = 1
 def keys(rows): return sorted(r["accountKey"] for r in rows)
 
+print("== L0: the realm names no product ==")
+# The vocabulary's own types and relationships (its README's table), the spine, and what this realm
+# derives (rules), projects (from-text) or names itself. Anything else in a query is a product.
+VOCAB_TYPES = {"CustomerAccount", "CrmAccount", "AccountContact", "AccountNote", "Opportunity", "FollowUp",
+               "Meeting", "SupportCase", "SupportMessage", "BillingCustomer", "BillingSubscription",
+               "BillingInvoice", "PaymentAttempt"}
+VOCAB_RELS = {"TRACKED_AS", "HAS_ACCOUNT_CONTACT", "HAS_OPPORTUNITY", "HAS_NOTE", "FOLLOW_UP_ON", "MEETING_WITH",
+              "HAS_CASE", "HAS_MESSAGE", "BILLED_AS", "HAS_SUBSCRIPTION", "HAS_INVOICE", "HAS_ATTEMPT"}
+OWN = {"AtRiskAccount", "SHARES_ISSUE", "POSSIBLY_WITHHELD_OVER", "Attendee", "CustomerIssue", "RAISED",
+       "WORKS_FOR", "TRACKED_BY"}
+def queries():
+    for f in sorted(glob.glob(os.path.join(realm, "views", "*.yml"))):
+        for v in yaml.safe_load(open(f)) or []:
+            yield "%s %s" % (os.path.basename(f), v["name"]), v.get("cypher", "")
+    for f in sorted(glob.glob(os.path.join(realm, "rules", "*.yml"))):
+        r = yaml.safe_load(open(f))
+        for i, d in enumerate(r.get("requires") or []): yield "%s requires[%d]" % (os.path.basename(f), i), d.get("materialize", "")
+        for i, d in enumerate(r.get("rules") or []): yield "%s rules[%d]" % (os.path.basename(f), i), d.get("derive", "") + " " + d.get("from", "")
+named = 0
+for where, q in queries():
+    code = re.sub(r"'[^']*'", "''", re.sub(r"//[^\n]*", "", q))
+    used = set(re.findall(r"\(\s*\w*\s*:\s*(\w+)", code)) | set(re.findall(r"\[\s*\w*\s*:\s*(\w+)", code))
+    stray = sorted(used - VOCAB_TYPES - VOCAB_RELS - OWN)
+    named += 1
+    if stray: print("  FAIL %s names %s" % (where, stray)); fail = 1
+print("  ok   %d queries read, every label and relationship the vocabulary's or the realm's own" % named if not fail else "")
+
+# What the app asks first: every system read in full, so every company any of them knows is an account.
+view_known = post("/api/v1/views/HealthKnownAccounts/invoke", {"args": {}})
+print("== the accounts: %s ==" % json.dumps((view_known.get("data") or [{}])[0]))
+
 print("== L1: every view answers by name ==")
-NAMES = ["HealthOpenCasesByAccount", "HealthResolvedCasesByAccount", "HealthReceivablesByAccount", "HealthBillingByAccount",
+NAMES = ["HealthKnownAccounts", "HealthOpenCaseCountsByAccount", "HealthUrgentCaseCountsByAccount", "HealthOpenCasesByAccount", "HealthResolvedCasesByAccount", "HealthReceivablesByAccount", "HealthBillingByAccount",
          "HealthRecurringByAccount", "HealthPipelineByAccount", "HealthCrmRecordByAccount", "HealthCompanyNotesForOpenCases",
          "HealthDealNotesForOpenCases", "HealthContactNotesForOpenCases", "HealthSellingIntoTrouble", "HealthOwingAndWaiting",
          "HealthRevenueBehindCases", "HealthBilledButUnknownToCrm",
-         "HealthAtRiskAccounts", "HealthSharedIssues", "HealthPossiblyWithheld", "HealthCaseTriage", "HealthCrmAwareness"]
+         "HealthAtRiskAccounts", "HealthSharedIssues", "HealthPossiblyWithheld", "HealthCaseTriage", "HealthCrmAwareness",
+         "StewardUnacknowledgedRisk", "StewardRenewalsWithoutCall", "ChaserUnchasedOverdue",
+         "ChaserWonWithoutSubscription", "ChaserFailedPayments"]
 V = {n: view(n) for n in NAMES}
 for n in NAMES: print("  ok   %-34s %d rows" % (n, len(V[n])))
 for n in ("HealthOpenCasesByAccount", "HealthBillingByAccount", "HealthCrmRecordByAccount"):
@@ -86,6 +126,20 @@ check("shared issue: both ends have an open case", True, all(a in cases and b in
 check("shared issue: each pair once, never an account with itself", True, len(set(pairs)) == len(pairs) and all(a < b for a, b in pairs))
 check("possibly withheld: only accounts that owe AND wait", True, set(r["accountKey"] for r in V["HealthPossiblyWithheld"]) <= (set(cases) & set(owed)))
 
+print("== L2d: the agents' duties agree with the facts ==")
+check("failed payments = the failed invoices on the receivables", sorted(k for k, r in owed.items() for _ in range(r["failedInvoices"])),
+      sorted(r["accountKey"] for r in V["ChaserFailedPayments"]))
+check("unacknowledged risk is a subset of the accounts at risk", True,
+      {r["accountKey"] for r in V["StewardUnacknowledgedRisk"]} <= set(risk))
+check("unchased overdue invoices are unpaid ones", True,
+      {r["accountKey"] for r in V["ChaserUnchasedOverdue"]} <= set(owed))
+check("won without a subscription: never an account that has one", set(),
+      {r["accountKey"] for r in V["ChaserWonWithoutSubscription"]} & set(recur))
+counts = {r["accountKey"]: r["openCases"] for r in V["HealthOpenCaseCountsByAccount"]}
+check("open-case counts = the detail view's counts", {k: r["openCases"] for k, r in cases.items()}, counts)
+check("urgent counts = the detail view's high priority", {k: r["highPriority"] for k, r in cases.items() if r["highPriority"]},
+      {r["accountKey"]: r["urgentCases"] for r in V["HealthUrgentCaseCountsByAccount"]})
+
 print("== L2c: the JUDGEMENTS are stable, and legal ==")
 # A materialised judgement must be the SAME judgement on the next read — that is what it is
 # materialised for. (It was not, until the host could see its own cache: embabel/me#1354.)
@@ -96,7 +150,7 @@ check("mood is one of the three words", True, all(r["mood"] in ("frustrated", "n
 check("awareness is one of the two words", True, all(r["crmAwareness"] in ("aware", "unaware") for r in V["HealthCrmAwareness"]))
 
 print("== L3: the app is served ==")
-code = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-u", auth, base + "/apps/account-health/account-signals.html"],
+code = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-K", auth, base + "/apps/account-health/account-signals.html"],
                       capture_output=True, text=True).stdout
 check("account-signals.html", "200", code)
 

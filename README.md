@@ -1,9 +1,14 @@
 # realm-account-health
 
 Which customers are in trouble, which are ready for more, and what the CRM does not know about
-them — read across a CRM, a helpdesk and a billing system, **naming no product**. Every view
-starts at a `CustomerAccount`, the spine each product realm keys, so the same views answer whether
-the CRM is Odoo or something else. Nothing is stored: each answer is read when it is asked for.
+them — read across a CRM, a helpdesk and a billing system, **naming no product**. Every view,
+rule and judgement is written against [realm-business-vocabulary](https://github.com/embabel-worlds/realm-business-vocabulary)'s
+types, edges and properties, and meets on `CustomerAccount`, the spine each product realm keys. The
+same answers come from whichever CRM, helpdesk and billing system the world has, so long as their
+realms sign the vocabulary's contract. Nothing is stored: each answer is read when it is asked for.
+
+**The reference stack** is Odoo, Chatwoot and Lago, below. Nothing in the read side names them; the
+one place a product still appears is the write side of the agents (see "What is still product-bound").
 
 **Open it:** `/apps/account-health/account-signals.html` — a map of every account that matters (red
 and green dots sized by money at stake), a split inbox underneath with every reason stacked on
@@ -36,7 +41,7 @@ what the next read here sees.
 
 | | Where | What |
 |---|---|---|
-| **Facts** | `views/health.yml` | Ten per-account facts, each ONE chain through ONE system; four conjunctions that are one honest query. |
+| **Facts** | `views/health.yml` | Per-account facts, each reading ONE system; conjunctions that are one honest query; `HealthKnownAccounts`, which reads every system in full so every company is an account. |
 | **Models judge** | `views/judgement.yml` | `HealthCaseTriage` — how much each open case hurts the customer, and their mood, from their own words. `HealthCrmAwareness` — does anything sales wrote touch the topic. Materialised, 6h. |
 | **Rules conclude** | `rules/` | `AtRiskAccount` — one definition, seven independent clauses across three systems, each recording its own reason. `SHARES_ISSUE` — two accounts with an open case in the same product area. `POSSIBLY_WITHHELD_OVER` — an unpaid invoice and a case raised before it fell due. Computed when asked; nothing stored. |
 | **Views project** | `views/conclusions.yml` | The small view per rule set that carries its conclusion to every surface, and is what makes the rules run. |
@@ -61,7 +66,7 @@ The duty views are in `views/agents.yml`; an empty answer is the duty kept. Duti
 and shown today, and run once duties do (business agents step 4).
 
 **Chaser's routine** notes a failed payment on the customer in the CRM and schedules a follow-up
-to chase it, using realm-odoo's `addNote` and `scheduleFollowUp`. It skips any invoice a
+to chase it, using the CRM realm's own verbs (realm-odoo's `addNote` and `scheduleFollowUp`). It skips any invoice a
 follow-up already names, whoever scheduled it, so it is safe to run again. It fires on
 `view.ChaserFailedPayments.changed`, which needs a watch on that view delivering as a signal —
 a watch belongs to whoever wants it, so a realm cannot ship one. Adopting Chaser means creating it:
@@ -87,8 +92,38 @@ authority makes each CRM note and follow-up a request a person approves in the A
 - A host with realm-declared spines (embabel/me#1340), and — for this realm's shape of query —
   #1351 (one label reached two ways) and #1354 (a materialised view's cache can be seen).
 - A company is an account once some system's realm has keyed it, which happens when that system
-  is read. The app reads `OdooCompanies, LagoCustomers, ChatwootCompanies` first; that list is a
-  setting, and the only place a product is named.
+  is read. The app asks `HealthKnownAccounts` first, which reads every system in full by its
+  vocabulary label.
+- Each product realm must sign the vocabulary's contract, including "Reading a whole system" in its
+  README: a bare parent label (`MATCH (c:SupportCase)`) reads the whole system, and the spine edges
+  (`TRACKED_AS`, `HAS_CASE`, `BILLED_AS`) declare `ridesHub` over exactly that sweep.
+- At scale, two engine fixes: embabel/me#3702 (a bare-label sweep is skipped when a spine edge also
+  reaches it, so the edge fetches once per account and is refused past 200 accounts) and #3703 (a
+  bare-label read does not mark the spine built, so answers warn `SPINE_NOT_BUILT`). Without them
+  every answer is still right on a book of a few hundred accounts.
+
+## How every query is shaped, and why
+
+A question about the whole book starts with a SWEEP by the bare vocabulary label, then joins to
+accounts. A `SupportCase` carries `accountKey` (the contract asks it to), so its account is a value
+match; a CRM or billing record does not, so the join is the spine edge, which rides the sweep:
+
+```cypher
+MATCH (o:Opportunity)                                         // the whole CRM's deals, one door
+MATCH (k:CrmAccount)                                          // every company the CRM knows
+MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o)
+```
+
+Written the other way round — out from each account — the answers are the same on a small book and
+refused on a real one.
+
+## What is still product-bound
+
+**The agents' writes.** Chaser's routine (`actions/chase_failed_payment.ts`) and Steward's repair
+(`actions/acknowledge_risk.ts`) write a note and schedule a follow-up through the CRM realm's own
+verbs, and `agents/chaser.yml` grants Odoo's. The vocabulary declares types and edges, not verbs, so
+a write cannot yet be said once for every CRM. The duties those agents keep (`views/agents.yml`)
+name no product.
 
 ## Known limits, stated rather than hidden
 

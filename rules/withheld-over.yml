@@ -33,11 +33,11 @@ maxPairs: 20000
 # sweeps: a demand that only asks whether something exists is fetched as an existence check —
 # one page — and the bodies then see 25 of 688 cases.
 requires:
-  - materialize: "MATCH (d:ChatwootDesk {status:'all'})-[:HAS_CASE]->(c:SupportCase) MATCH (a:CustomerAccount)-[:HAS_CASE]->(c) RETURN c.id AS id"
-    description: "Every case on the desk, linked to its account by the account's domain."
-  - materialize: "MATCH (b:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:BillingCustomer) MATCH (a:CustomerAccount)-[:BILLED_AS]->(lc) RETURN lc.id AS id"
-    description: "Every billing customer, linked to its account by the customer's url."
-  - materialize: "MATCH (b:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:BillingCustomer) MATCH (b)-[:HAS_INVOICE]->(i:BillingInvoice) MATCH (lc)-[:HAS_INVOICE]->(i) RETURN i.id AS id"
+  - materialize: "MATCH (c:SupportCase) MATCH (a:CustomerAccount)-[:HAS_CASE]->(c) RETURN c.subject AS subject"
+    description: "Every case on the helpdesk, linked to its account by the account's domain."
+  - materialize: "MATCH (lc:BillingCustomer) MATCH (a:CustomerAccount)-[:BILLED_AS]->(lc) RETURN lc.name AS name"
+    description: "Every billing customer, linked to its account."
+  - materialize: "MATCH (lc:BillingCustomer) MATCH (i:BillingInvoice) MATCH (lc)-[:HAS_INVOICE]->(i) RETURN i.number AS number"
     description: "Every invoice on the books, linked to its billing customer."
 rules:
   - derive: "(i)-[:POSSIBLY_WITHHELD_OVER {owed: owed, openedOn: openedOn}]->(c)"
@@ -46,4 +46,4 @@ rules:
       WHERE i.paymentStatus <> 'succeeded' AND i.dueOn IS NOT NULL
       MATCH (a)-[:HAS_CASE]->(c:SupportCase)
       WHERE c.status IN ['open', 'pending'] AND c.openedOn IS NOT NULL AND c.openedOn <= i.dueOn
-      WITH i, c, i.amountDueCents / 100.0 AS owed, c.openedOn AS openedOn
+      WITH i, c, i.amount - i.amountPaid AS owed, c.openedOn AS openedOn

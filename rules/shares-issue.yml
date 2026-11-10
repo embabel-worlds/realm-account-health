@@ -16,7 +16,7 @@ derives: SHARES_ISSUE
 description: >-
   Two customer accounts each have an open support case in the same product area. `areas` lists
   the areas they share and `shared` counts them. Concluded from the helpdesk's own `area-*`
-  labels on open conversations; computed when asked, never stored.
+  tags on open cases; computed when asked, never stored.
 properties:
   shared: { type: int, description: "How many product areas the two accounts both have an open case in." }
   areas:  { type: any, description: "The shared product areas, as the helpdesk labels them." }
@@ -33,18 +33,18 @@ maxPairs: 5000
 # sweeps: a demand that only asks whether something exists is fetched as an existence check —
 # one page — and the bodies then see 25 of 688 cases.
 requires:
-  - materialize: "MATCH (d:ChatwootDesk {status:'all'})-[:HAS_CASE]->(c:SupportCase) MATCH (a:CustomerAccount)-[:HAS_CASE]->(c) RETURN c.id AS id"
-    description: "Every case on the desk, linked to its account by the account's domain."
+  - materialize: "MATCH (c:SupportCase) MATCH (a:CustomerAccount)-[:HAS_CASE]->(c) RETURN c.subject AS subject"
+    description: "Every case on the helpdesk, linked to its account by the account's domain."
 rules:
   - derive: "(a)-[:SHARES_ISSUE {shared: n, areas: areas}]->(b)"
     from: |
       MATCH (a:CustomerAccount)-[:HAS_CASE]->(ca:SupportCase)
       WHERE ca.status IN ['open', 'pending']
-      UNWIND ca.labels AS area
+      UNWIND ca.tags AS area
       WITH a, area WHERE area STARTS WITH 'area-'
       WITH DISTINCT a, area
       MATCH (b:CustomerAccount)-[:HAS_CASE]->(cb:SupportCase)
-      WHERE cb.status IN ['open', 'pending'] AND a.accountKey < b.accountKey AND area IN cb.labels
+      WHERE cb.status IN ['open', 'pending'] AND a.accountKey < b.accountKey AND area IN cb.tags
       WITH a, b, collect(DISTINCT area) AS areas
       WITH a, b, areas, size(areas) AS n
       WHERE n >= 1

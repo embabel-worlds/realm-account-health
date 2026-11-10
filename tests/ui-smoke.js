@@ -7,8 +7,10 @@
  * the thing it checks was broken on 2026-09-21 and was invisible to verify.sh.
  *
  *   AH_USER=<you> AH_PASS=<your password> node tests/ui-smoke.js
+ *   AH_TOKEN=<appliance API key> node tests/ui-smoke.js
  *
- * Only the account created during appliance setup can sign in; there is no default login.
+ * Only the account created during appliance setup can sign in; there is no default login. An API
+ * key goes on every request as a bearer header instead, and no sign-in page is seen.
  * Set AH_URL to point somewhere other than the local appliance.
  */
 const path = require('path');
@@ -43,14 +45,17 @@ async function loadPlaywright() {
 }
 
 const APP = process.env.AH_URL || 'http://127.0.0.1:11043/apps/account-health/account-signals.html';
-const [USER, PASS] = [process.env.AH_USER, process.env.AH_PASS];
+const [USER, PASS, TOKEN] = [process.env.AH_USER, process.env.AH_PASS, process.env.AH_TOKEN];
 const pass = [], fail = [], warn = [];
 const ok  = (n, c, d) => (c ? pass : fail).push(`${c?'PASS':'FAIL'}: ${n}${d?` — ${d}`:''}`);
 
 (async () => {
   const { chromium } = await loadPlaywright();
   const b = await chromium.launch();
-  const p = await b.newPage({ viewport: { width: 1440, height: 1000 } });
+  // Reduced motion: the map's hurting dots pulse forever, and a pulsing element is never "stable"
+  // enough for a click. The page honours the preference, so this tests the same page, still.
+  const p = await b.newPage({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce',
+    extraHTTPHeaders: TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {} });
   const errors = [];
   p.on('console', m => { if (m.type() === 'error') errors.push(m.text().slice(0,160)); });
   p.on('pageerror', e => errors.push('PAGEERROR ' + e.message.slice(0,160)));

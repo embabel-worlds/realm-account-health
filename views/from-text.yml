@@ -21,8 +21,9 @@
       type: string
       description: "The email as received, including the From line."
   # Open cases and owed are defined exactly as HealthOpenCasesByAccount and
-  # HealthReceivablesByAccount define them (status 'open'; paymentStatus not 'succeeded',
-  # amountDueCents in cents), so tests/verify.sh can hold this view to those two.
+  # HealthReceivablesByAccount define them (status 'open'; paymentStatus not 'succeeded', owed as
+  # amount less amountPaid), so tests/verify.sh can hold this view to those two. It reaches one
+  # account, so it walks out from it; the book-wide views sweep first instead.
   cypher: |
     CALL ai.fromText($email, '(p:Attendee)-[:RAISED]->(i:CustomerIssue), (p)-[:WORKS_FOR]->(a:CustomerAccount)')
       YIELD p, i, a
@@ -31,7 +32,7 @@
     WITH p, i, a, collect(DISTINCT c.subject) AS openCases
     OPTIONAL MATCH (a)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(inv:BillingInvoice)
     WHERE inv.paymentStatus <> 'succeeded'
-    WITH p, i, a, openCases, sum(inv.amountDueCents) / 100.0 AS owed
+    WITH p, i, a, openCases, sum(inv.amount - inv.amountPaid) AS owed
     RETURN p.name AS sender, p.role AS role, i.summary AS issue, i.severity AS severity,
            a.accountKey AS accountKey, a.name AS account, openCases, owed
 

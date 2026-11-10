@@ -4,8 +4,9 @@
 # is fine, one row per thing somebody should act on, and enough on the row to act without
 # asking again.
 #
-# They sweep the books and join graph-side, like the views in health.yml and for the same reason:
-# a walk out from each account refuses above ~200 accounts.
+# They name no product, and sweep each system by its bare vocabulary label before joining through
+# the spine, like the views in health.yml and for the same reason: a walk out from each account
+# refuses above ~200 accounts.
 #
 # A SET, THEN A NEGATION. "No follow-up exists" is the shape of most of these, and an OPTIONAL
 # MATCH across a sweep is the one form health.yml records as unreliable. So the things that DO
@@ -22,13 +23,9 @@
   # says somebody will do something by a date, which is what "picked up" means to the account's
   # owner — and it is what Steward's repair proposes, so the duty and its repair agree.
   cypher: |
-    MATCH (b:OdooBook {scope:'all'})-[:HAS_ACTIVITY]->(t:OdooActivity)
-    WHERE t.res_model = 'res.partner'
-    WITH collect(DISTINCT toString(t.res_id)) AS followed
-    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
-    WITH followed, k, split(split(toString(k.website), '//')[-1], '/')[0] AS host
-    WITH followed, k, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
-    WITH collect(DISTINCT CASE WHEN k.id IN followed THEN domain END) AS acknowledged
+    MATCH (f:FollowUp)-[:FOLLOW_UP_ON]->(k:CrmAccount)
+    MATCH (fa:CustomerAccount)-[:TRACKED_AS]->(k)
+    WITH collect(DISTINCT fa.accountKey) AS acknowledged
     MATCH (a:AtRiskAccount)
     WHERE NOT a.accountKey IN acknowledged
     RETURN a.accountKey AS accountKey, a.name AS account,
@@ -45,16 +42,14 @@
     have no call booked" and the violations of Steward's second duty.
   # The renewal is the one at-risk carries: a renewal inside the rule's window while a case is
   # open. A meeting counts when the COMPANY is an attendee; one booked with only a person at the
-  # company is not seen here, because a contact carries no website to key the account by.
+  # company is not seen here, because MEETING_WITH reaches a person's own record, which TRACKED_AS
+  # does not key an account by.
   cypher: |
-    MATCH (b:OdooBook {scope:'all'})-[:HAS_MEETING]->(m:OdooMeeting)
-    WHERE m.start >= toString(date())
-    UNWIND m.partner_ids AS attendee
-    WITH collect(DISTINCT toString(attendee)) AS invited
-    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
-    WITH invited, k, split(split(toString(k.website), '//')[-1], '/')[0] AS host
-    WITH invited, k, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
-    WITH collect(DISTINCT CASE WHEN k.id IN invited THEN domain END) AS booked
+    MATCH (m:Meeting)
+    WHERE m.startsOn >= toString(date())
+    MATCH (m)-[:MEETING_WITH]->(k:CrmAccount)
+    MATCH (ma:CustomerAccount)-[:TRACKED_AS]->(k)
+    WITH collect(DISTINCT ma.accountKey) AS booked
     MATCH (a:AtRiskAccount)
     WHERE a.riskRenewsOn IS NOT NULL
       AND substring(a.riskRenewsOn, 0, 10) <= toString(date() + duration('P60D'))
@@ -67,25 +62,21 @@
     Invoices more than 14 days past due, unpaid, on an account nobody is chasing: no follow-up is
     scheduled on the company in the CRM. One row per invoice, most owed first. THE answer for
     "which overdue invoices is nobody chasing" and the violations of Chaser's first duty.
-  # Overdue by BILLING's own due date. On a book loaded into Lago that date is the load date plus
-  # the payment terms — Lago cannot backdate an invoice — so a freshly loaded book has nothing
-  # 14 days overdue yet, and this view says so by answering empty.
+  # Overdue by BILLING's own due date. On a book loaded into a billing system that cannot backdate
+  # an invoice (Lago cannot), that date is the load date plus the payment terms, so a freshly loaded
+  # book has nothing 14 days overdue yet, and this view says so by answering empty.
   cypher: |
-    MATCH (b:OdooBook {scope:'all'})-[:HAS_ACTIVITY]->(t:OdooActivity)
-    WHERE t.res_model = 'res.partner'
-    WITH collect(DISTINCT toString(t.res_id)) AS followed
-    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
-    WITH followed, k, split(split(toString(k.website), '//')[-1], '/')[0] AS host
-    WITH followed, k, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
-    WITH collect(DISTINCT CASE WHEN k.id IN followed THEN domain END) AS chased
-    MATCH (lb:LagoBooks {scope:'all'})-[:HAS_INVOICE]->(i:LagoInvoice)
+    MATCH (f:FollowUp)-[:FOLLOW_UP_ON]->(k:CrmAccount)
+    MATCH (fa:CustomerAccount)-[:TRACKED_AS]->(k)
+    WITH collect(DISTINCT fa.accountKey) AS chased
+    MATCH (i:BillingInvoice)
     WHERE i.paymentStatus <> 'succeeded' AND i.dueOn IS NOT NULL
       AND i.dueOn < toString(date() - duration('P14D'))
-    WITH chased, i, split(i.customerUrl, '//')[1] AS domain
-    WHERE NOT domain IN chased
-    MATCH (a:CustomerAccount {accountKey: domain})
+    MATCH (bc:BillingCustomer)
+    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc)-[:HAS_INVOICE]->(i)
+    WHERE NOT a.accountKey IN chased
     RETURN a.accountKey AS accountKey, a.name AS account, i.number AS invoice, i.dueOn AS dueOn,
-           i.amountDueCents / 100.0 AS owed, i.currency AS currency, i.paymentStatus AS paymentStatus,
+           i.amount - i.amountPaid AS owed, i.currency AS currency, i.paymentStatus AS paymentStatus,
            i.sourceUrl AS invoiceUrl
     ORDER BY owed DESC
 
@@ -95,19 +86,18 @@
     being billed. One row per account, with the won deals by name. THE answer for "which won
     deals are not billing" and the violations of Chaser's second duty.
   cypher: |
-    MATCH (lb:LagoBooks {scope:'all'})-[:HAS_SUBSCRIPTION]->(s:LagoSubscription)
+    MATCH (s:BillingSubscription)
     WHERE s.status = 'active'
-    WITH collect(DISTINCT s.customerExternalId) AS subscribed
-    MATCH (lb2:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:LagoCustomer)
-    WITH collect(DISTINCT CASE WHEN lc.externalId IN subscribed THEN split(lc.url, '//')[1] END) AS billing
-    MATCH (b:OdooBook {scope:'all'})-[:HAS_ANY_LEAD]->(o:OdooLead)-[:LEAD_OF]->(k:OdooCustomer)
-    WHERE o.won_status = 'won'
-    WITH billing, o, split(split(toString(k.website), '//')[-1], '/')[0] AS host
-    WITH billing, o, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
-    WHERE NOT domain IN billing
-    MATCH (a:CustomerAccount {accountKey: domain})
-    RETURN a.accountKey AS accountKey, a.name AS account, collect(o.name) AS wonDeals,
-           sum(o.expected_revenue) AS wonValue
+    MATCH (bc:BillingCustomer)
+    MATCH (sa:CustomerAccount)-[:BILLED_AS]->(bc)-[:HAS_SUBSCRIPTION]->(s)
+    WITH collect(DISTINCT sa.accountKey) AS billing
+    MATCH (o:Opportunity)
+    WHERE o.status = 'won'
+    MATCH (k:CrmAccount)
+    MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o)
+    WHERE NOT a.accountKey IN billing
+    RETURN a.accountKey AS accountKey, a.name AS account, collect(o.title) AS wonDeals,
+           sum(o.amount) AS wonValue
     ORDER BY wonValue DESC
 
 - name: ChaserFailedPayments
@@ -119,10 +109,10 @@
   # happens, where an unchased overdue invoice is a CONDITION to keep false. A watch on this view
   # turns a new row into `view.ChaserFailedPayments.changed`, which the routine listens for.
   cypher: |
-    MATCH (lb:LagoBooks {scope:'all'})-[:HAS_INVOICE]->(i:LagoInvoice)
+    MATCH (i:BillingInvoice)
     WHERE i.paymentStatus = 'failed'
-    WITH i, split(i.customerUrl, '//')[1] AS domain
-    MATCH (a:CustomerAccount {accountKey: domain})
+    MATCH (bc:BillingCustomer)
+    MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc)-[:HAS_INVOICE]->(i)
     RETURN a.accountKey AS accountKey, a.name AS account, i.number AS invoice,
-           i.amountDueCents / 100.0 AS owed, i.currency AS currency, i.sourceUrl AS invoiceUrl
+           i.amount - i.amountPaid AS owed, i.currency AS currency, i.sourceUrl AS invoiceUrl
     ORDER BY account, invoice

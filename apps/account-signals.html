@@ -221,7 +221,7 @@
   <h3>1. The data</h3>
   <p>Every figure is read when this page loads, or when you press Refresh, from three systems through the world's knowledge graph: the <b>CRM</b> (accounts, deals, notes), the <b>helpdesk</b> (support cases) and <b>billing</b> (invoices, subscriptions). They meet on one node per company, <code>CustomerAccount</code>, which each system's realm keys by the company's web domain. Nothing is copied or stored by this app. The source realms cache a read for one to five minutes, so "now" can be up to five minutes old.</p>
   <h3>2. The questions</h3>
-  <p><b>First, who is an account.</b> A company becomes an account when one of the three systems' realms keys it, which happens when that system is read. So before anything else the page invokes the views listed under "Which views find the companies" below — by default <code>OdooCompanies</code>, <code>LagoCustomers</code> and <code>ChatwootCompanies</code>. These are the only product names on this page and they are a setting: a world with a different CRM lists that realm's view instead.</p>
+  <p><b>First, who is an account.</b> A company becomes an account when one of the three systems' realms keys it, which happens when that system is read. So before anything else the page invokes <code>HealthKnownAccounts</code>, which reads the CRM's companies, the billing system's customers and the helpdesk's cases in full by their business-vocabulary names. Nothing on this page, and nothing in the realm's views, names a product: the same page answers whichever CRM, helpdesk and billing system the world has, so long as their realms speak the vocabulary.</p>
   <p>Then it invokes fifteen saved views from the <code>account-health</code> realm, all without parameters, and joins their rows by <code>accountKey</code> in the browser. Ten are plain facts:</p>
   <ul>
     <li><code>HealthOpenCasesByAccount</code> — open and pending support cases per account: count, high priority, longest thread, oldest opened, subjects.</li>
@@ -275,7 +275,7 @@
   </ul>
   <div class="settings">
     <h3>Links back to your systems</h3>
-    <p>Invoices link with the address billing reports. Cases and CRM records need to know where your helpdesk and CRM live; <code>{id}</code> is replaced by the record's id. Stored in this browser only.</p>
+    <p>Every record links to itself in the product it lives in, with the address that product's realm reports. The two URLs below are only for a product whose realm reports none; <code>{id}</code> is replaced by the record's id. Stored in this browser only.</p>
     <label>Which views find the companies (comma separated)<input id="set-sources" type="text"></label>
     <label>Support case URL<input id="set-case" type="text"></label>
     <label>CRM account URL<input id="set-crm" type="text"></label>
@@ -322,7 +322,9 @@
 
   /* Which views make every company an ACCOUNT. Install-specific, like the URLs: they name the three
      products this world happens to run. Everything else on the page names none. */
-  var settings = { sourceViews: 'OdooCompanies, LagoCustomers, ChatwootCompanies', caseUrl: 'http://localhost:3100/app/accounts/1/conversations/{id}', crmUrl: 'http://localhost:8069/odoo/contacts/{id}' };
+  /* Every record carries its own link (the vocabulary's sourceUrl), so the URL templates are only a
+     fallback for a product whose realm does not give one, and default to nothing. */
+  var settings = { sourceViews: 'HealthKnownAccounts', caseUrl: '', crmUrl: '' };
   try { Object.assign(settings, JSON.parse(localStorage.getItem('account-signals.settings') || '{}')); } catch (e) { /* defaults stand */ }
   var done = {};
   try { done = JSON.parse(localStorage.getItem('account-signals.done') || '{}'); } catch (e) { done = {}; }
@@ -823,10 +825,14 @@
     }).join('');
 
     var open = [];
-    if (a.crm && a.crm.crmId) open.push(link('Open in the CRM', settings.crmUrl.replace('{id}', encodeURIComponent(a.crm.crmId))));
-    if (a.cases) list(a.cases.caseIds).slice(0, 5).forEach(function (id) {
-      open.push(link('Case #' + id, settings.caseUrl.replace('{id}', encodeURIComponent(id))));
-    });
+    if (a.crm && a.crm.crmUrl) open.push(link('Open in the CRM', a.crm.crmUrl));
+    if (a.cases) {
+      var caseUrls = list(a.cases.caseUrls);
+      list(a.cases.caseIds).slice(0, 5).forEach(function (id, i) {
+        var url = caseUrls[i] || (settings.caseUrl ? settings.caseUrl.replace('{id}', encodeURIComponent(id)) : '');
+        if (url) open.push(link('Case #' + id, url));
+      });
+    }
     if (a.owed) invoiceLinks(a.owed).forEach(function (l) { open.push(link(l.label, l.url)); });
 
     $('drawer').innerHTML =

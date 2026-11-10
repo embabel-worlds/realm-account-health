@@ -48,7 +48,8 @@
   outputLabel: PossiblyWithheldRow
   cypher: |
     MATCH (i:BillingInvoice)-[w:POSSIBLY_WITHHELD_OVER]->(c:SupportCase)
-    RETURN c.accountKey AS accountKey, i.customerName AS customer, i.number AS invoice, w.owed AS owed, i.currency AS currency,
+    MATCH (a:CustomerAccount {accountKey: c.accountKey})
+    RETURN c.accountKey AS accountKey, a.name AS customer, i.number AS invoice, w.owed AS owed, i.currency AS currency,
            i.dueOn AS dueOn, c.subject AS caseSubject, w.openedOn AS caseOpenedOn,
            c.id AS caseId, i.sourceUrl AS invoiceUrl
     ORDER BY owed DESC

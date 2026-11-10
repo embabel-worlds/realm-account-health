@@ -38,36 +38,38 @@ properties:
   riskLongestThread:  { type: int,      description: "Replies on the longest open case, when it has run past the threshold." }
   riskHighPriorityCases: { type: int,   description: "Open cases marked high or urgent." }
   riskUnownedBilling: { type: boolean,  description: "True when billing invoices this account and the CRM has no record of it." }
-# BOOK SWEEPS, THEN RIDE THE SPINE — the same door inversion the fact views in ../views were
+# BOOK SWEEPS, THEN RIDE THE SPINE — the same inversion the fact views in ../views are
 # built on, and the engine's answer to embabel/me#1489. Written as `(a:CustomerAccount)-[:HAS_CASE]->(c)`
 # alone, a demand fetches once PER ACCOUNT, which is refused above `maxAnchors` (200): at 2,030
 # accounts every demand failed, the bodies matched nothing, and the view answered "none". Each
-# demand below first sweeps ONE door on the book (the desk, the billing books, the CRM book) and
-# then names the vocabulary edge from the account to the SAME alias; that edge is declared
-# `ridesHub: true` in its realm, so the engine links each account to its records by the spine's
-# own key instead of fetching, and the bodies traverse the edges they always did. The desk sweep
-# is `all` because the rules count `pending` cases as open, and every demand PROJECTS what it
-# sweeps: a demand that only asks whether something exists is fetched as an existence check —
+# demand below first sweeps ONE system by its bare vocabulary label (`MATCH (c:SupportCase)`, which
+# the installed product answers through its book door) and then names the vocabulary edge from the
+# account to the SAME alias; that edge is declared `ridesHub: true` in its realm, so the engine links
+# each account to its records by the spine's own key instead of fetching, and the bodies traverse the
+# edges they always did. The case sweep is every status because the rules count `pending` cases as
+# open. The CRM sweep is every COMPANY, prospects included: it once swept customers who had bought,
+# TRACKED_AS rode that, and three prospects billing knows were concluded "billed with no owner".
+# Every demand PROJECTS what it sweeps: a demand that only asks whether something exists is fetched as an existence check —
 # one page — and the bodies then see 25 of 688 cases.
 requires:
-  - materialize: "MATCH (d:ChatwootDesk {status:'all'})-[:HAS_CASE]->(c:SupportCase) MATCH (a:CustomerAccount)-[:HAS_CASE]->(c) RETURN c.id AS id"
-    description: "Every case on the desk, linked to its account by the account's domain."
-  - materialize: "MATCH (b:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:BillingCustomer) MATCH (a:CustomerAccount)-[:BILLED_AS]->(lc) RETURN lc.id AS id"
-    description: "Every billing customer, linked to its account by the customer's url."
-  - materialize: "MATCH (b:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:BillingCustomer) MATCH (b)-[:HAS_INVOICE]->(i:BillingInvoice) MATCH (lc)-[:HAS_INVOICE]->(i) RETURN i.id AS id"
+  - materialize: "MATCH (c:SupportCase) MATCH (a:CustomerAccount)-[:HAS_CASE]->(c) RETURN c.subject AS subject"
+    description: "Every case on the helpdesk, linked to its account by the account's domain."
+  - materialize: "MATCH (lc:BillingCustomer) MATCH (a:CustomerAccount)-[:BILLED_AS]->(lc) RETURN lc.name AS name"
+    description: "Every billing customer, linked to its account."
+  - materialize: "MATCH (lc:BillingCustomer) MATCH (i:BillingInvoice) MATCH (lc)-[:HAS_INVOICE]->(i) RETURN i.number AS number"
     description: "Every invoice on the books, linked to its billing customer."
-  - materialize: "MATCH (b:LagoBooks {scope:'all'})-[:HAS_CUSTOMER]->(lc:BillingCustomer) MATCH (b)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription) MATCH (lc)-[:HAS_SUBSCRIPTION]->(s) RETURN s.id AS id"
+  - materialize: "MATCH (lc:BillingCustomer) MATCH (s:BillingSubscription) MATCH (lc)-[:HAS_SUBSCRIPTION]->(s) RETURN s.product AS product"
     description: "Every subscription on the books, linked to its billing customer."
-  - materialize: "MATCH (b:OdooBook {scope:'all'})-[:HAS_CUSTOMER]->(k:CrmAccount) MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k) RETURN k.id AS id"
-    description: "Every CRM customer, linked to its account by the customer's website."
-  - materialize: "MATCH (b:OdooBook {scope:'all'})-[:HAS_CUSTOMER]->(k:CrmAccount) MATCH (b)-[:HAS_ANY_LEAD]->(o:Opportunity) MATCH (k)-[:HAS_OPPORTUNITY]->(o) RETURN o.id AS id"
-    description: "Every opportunity on the CRM book, linked to its customer."
+  - materialize: "MATCH (k:CrmAccount) MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k) RETURN k.name AS name"
+    description: "Every company the CRM knows, prospects included, linked to its account."
+  - materialize: "MATCH (k:CrmAccount) MATCH (o:Opportunity) MATCH (k)-[:HAS_OPPORTUNITY]->(o) RETURN o.title AS title"
+    description: "Every opportunity in the CRM, linked to its company."
 rules:
   - derive: "(a:AtRiskAccount {riskOwingAndWaiting: owed})"
     from: |
       MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
       WHERE i.paymentStatus <> 'succeeded'
-      WITH a, sum(i.amountDueCents) / 100.0 AS owed
+      WITH a, sum(i.amount - i.amountPaid) AS owed
       MATCH (a)-[:HAS_CASE]->(c:SupportCase)
       WHERE c.status IN ['open', 'pending']
       WITH a, owed, count(c) AS openCases
@@ -79,8 +81,8 @@ rules:
       WHERE c.status IN ['open', 'pending']
       WITH DISTINCT a
       MATCH (a)-[:TRACKED_AS]->(:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)
-      WHERE o.won_status = 'pending'
-      WITH a, sum(o.expected_revenue) AS pipeline
+      WHERE o.status = 'open'
+      WITH a, sum(o.amount) AS pipeline
       WHERE pipeline > 0
 
   - derive: "(a:AtRiskAccount {riskFailedPayments: failed})"

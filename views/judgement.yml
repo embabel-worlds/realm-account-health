@@ -35,10 +35,10 @@
   #
   # 1. `(a:CustomerAccount)-[:HAS_CASE]->` binds every account as an anchor — the same defect
   #    the fact views were inverted out of. At 510 accounts it refused outright.
-  # 2. The message hop is per-conversation and CANNOT be swept: Chatwoot's API has no bulk
-  #    message endpoint, only `/conversations/{id}/messages`. So each case judged is one
-  #    fetch AND one model call, and 667 open cases is 667 of each — over `maxAnchors`, and
-  #    an expensive refresh even where it runs.
+  # 2. The message hop is per-case and may not be sweepable: a helpdesk need not have a bulk
+  #    message endpoint (Chatwoot has only `/conversations/{id}/messages`). So each case judged
+  #    is one fetch AND one model call, and 667 open cases is 667 of each — over `maxAnchors`,
+  #    and an expensive refresh even where it runs.
   #
   # So the cases are taken off the desk in one read, ranked by how much back-and-forth they
   # have had, and only the worst 150 are fetched and judged. That ordering is the point: a case
@@ -63,8 +63,9 @@
   # whole case, oldest first, and mood on their last three messages only. The opening message
   # says what the problem was when it was raised; a customer who opened politely and is on reply
   # forty asking for an escalation is exactly who "who is frustrated with us" means, and a
-  # workaround found mid-thread turns blocked into degraded. Agents' replies, Chatwoot's activity
-  # lines and private notes are not the customer's words and are left out. The impact text is
+  # workaround found mid-thread turns blocked into degraded. Agents' replies, a desk's own activity
+  # lines and private notes are not the customer's words and are left out: `fromCustomer` is the
+  # vocabulary's word for that, and `sentOn` then `id` orders a thread (ids grow within a desk). The impact text is
   # bounded — the opening message and the last seven — so the busiest threads, which are the ones
   # this view ranks first, cannot blow out a batched call. The messages are SORTED before they are
   # collected: the join returns them oldest first, but collect() promises no order and the view
@@ -84,16 +85,17 @@
   # mood, and replies only to break ties. The two labels are judged in a WITH so the sort can see
   # them — the same shape OdooDealTriage uses to filter on its triage label.
   cypher: |
-    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
+    MATCH (c:SupportCase)
+    WHERE c.status = 'open'
     WITH c, c.accountKey AS domain
     ORDER BY c.replyCount DESC
     LIMIT 150
     MATCH (a:CustomerAccount {accountKey: domain})
     WITH a, c
     MATCH (c)-[:HAS_MESSAGE]->(m:SupportMessage)
-    WHERE m.messageType = 0 AND NOT coalesce(m.internal, false)
+    WHERE m.fromCustomer AND NOT coalesce(m.internal, false)
     WITH a, c, m
-    ORDER BY m.sentAt, m.id
+    ORDER BY m.sentOn, m.id
     WITH a, c, collect(m.body) AS wrote
     WITH a, c, size(wrote) AS customerMessages,
          reduce(t = '', x IN wrote[0..1] + wrote[1..][-7..] | t + ' | ' + x) AS said,
@@ -123,23 +125,25 @@
   # themselves are snapshotted, which is what a table of judgements is.
   materialized: true
   ttl: 6h
-  # THREE SWEEPS, JOINED GRAPH-SIDE — not a walk out from each account.
+  # THE OPEN CASES FIRST, THEN THE CRM — not a walk out from every account.
   #
   # This opened `MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)`, which binds every
   # account as an anchor and asks the desk about each one. At 1,904 accounts it refused outright
   # (`exceeding maxAnchors 200`), so the Account Signals app withheld the awareness signal
   # entirely and told the reader the judgement did not answer.
   #
-  # Inverted it is the same shape the notes views use: chatter off the book's message door, the
-  # CRM records off the partner door, and the open-case set off the DESK. Every aggregate sits
-  # AFTER the last join, per the JOIN-BEFORE-AGGREGATING rule the conjunction views record — and
-  # every collect dedupes on the record's OWN id, because joining three sweeps fans out and a
-  # plain collect would repeat each note once per case.
+  # Inverted, it is the shape the notes views use: the open cases off the helpdesk in one sweep,
+  # grouped per account and capped; the CRM's companies in one sweep, which TRACKED_AS rides; then
+  # each kept account's notes through the vocabulary's own edges — on the company, on its deals and
+  # on its people — each collected per account before the next, so none multiplies another.
   #
-  # CAPPED at 150 accounts, worst back-and-forth first. The model is no longer the reason —
-  # batched, 150 accounts is ~8 calls and 1.5s of model time — the three-sweep join is: ~21s cold
-  # at 150 and ~43s at all 667 open-case accounts (measured 2026-09-22), most of it graph work.
-  # Raise the cap when the join is cheaper, not the judge.
+  # It used to join the CRM's whole chatter to its partners by record id, which no vocabulary has a
+  # word for, attributed a note on a DEAL to whichever partner shared the deal's number, and never
+  # read the notes on an account's people. The vocabulary's edges say which record a note is on.
+  #
+  # CAPPED at 150 accounts, worst back-and-forth first, so the note edges are asked about at most
+  # 150 companies — batched calls, not one per account. The model is not the reason for the cap:
+  # batched, 150 accounts is ~8 calls and 1.5s of model time.
   #
   # THE JUDGE IS THE `workhorse` ROLE, not the query's own `vc_execution`. Whether a note "touches
   # the same topic" as a case in other words is a reading judgement, and the per-row role (the
@@ -155,28 +159,28 @@
   # the generated book it settles nothing (every account has notes, none quotes a subject), so it
   # costs nothing there and earns its keep on real CRM data.
   cypher: |
-    MATCH (b:OdooBook {scope:'all'})-[:HAS_MESSAGE]->(n:OdooMessage)
-    // The partner key is computed ONCE here, as a plain value, so the join below is an equality
-    // of two values the planner can hash-join. Written `k.id = toString(n.res_id)`, the function
-    // on one side made it a 6,000 × 4,010 cartesian filter: 13.6s against 2.5s, measured
-    // 2026-09-22 with every sweep cached.
-    WITH n, toString(n.res_id) AS partnerId
-    MATCH (b2:OdooBook {scope:'all'})-[:HAS_PARTNER]->(k:OdooCustomer)
-    WHERE k.id = partnerId
-    WITH n, split(split(toString(k.website), '//')[-1], '/')[0] AS host
-    WITH n, CASE WHEN host STARTS WITH 'www.' THEN substring(host, 4) ELSE host END AS domain
-    MATCH (d:ChatwootDesk {status:'open'})-[:HAS_CASE]->(c:ChatwootConversation)
-    WHERE c.accountKey = domain
-    WITH domain,
-         collect(DISTINCT [c.id, c.subject]) AS caseRows,
-         collect(DISTINCT [n.id, n.body]) AS noteRows,
-         max(c.replyCount) AS longestThread
+    MATCH (c:SupportCase)
+    WHERE c.status = 'open'
+    WITH c, c.accountKey AS domain
+    MATCH (a:CustomerAccount {accountKey: domain})
+    WITH a, collect(DISTINCT [c.id, c.subject]) AS caseRows, max(c.replyCount) AS longestThread
     ORDER BY longestThread DESC
     LIMIT 150
-    WITH domain, caseRows, noteRows, size(caseRows) AS openCases, size(noteRows) AS noteCount,
+    MATCH (k:CrmAccount)
+    MATCH (a)-[:TRACKED_AS]->(k)
+    OPTIONAL MATCH (k)-[:HAS_NOTE]->(onCompany:AccountNote)
+    WITH a, k, caseRows, collect(DISTINCT onCompany.body) AS companyNotes
+    OPTIONAL MATCH (k)-[:HAS_OPPORTUNITY]->(:Opportunity)-[:HAS_NOTE]->(onDeal:AccountNote)
+    WITH a, k, caseRows, companyNotes, collect(DISTINCT onDeal.body) AS dealNotes
+    OPTIONAL MATCH (k)-[:HAS_ACCOUNT_CONTACT]->(:AccountContact)-[:HAS_NOTE]->(onPerson:AccountNote)
+    // Each list is aggregated into its OWN variable and joined in the next WITH. Written as
+    // `companyNotes + dealNotes + collect(...)` in one item, the carried lists are not grouping keys,
+    // and the engine evaluated it without complaint and dropped the deal and contact notes.
+    WITH a, caseRows, companyNotes, dealNotes, collect(DISTINCT onPerson.body) AS personNotes
+    WITH a, caseRows, companyNotes + dealNotes + personNotes AS noteRows
+    WITH a, caseRows, noteRows, size(caseRows) AS openCases, size(noteRows) AS noteCount,
          reduce(t = '', x IN caseRows | t + ' | ' + x[1]) AS problems,
-         reduce(t = '', x IN noteRows | t + ' | ' + coalesce(x[1], '')) AS written
-    MATCH (a:CustomerAccount {accountKey: domain})
+         reduce(t = '', x IN noteRows | t + ' | ' + coalesce(x, '')) AS written
     RETURN a.accountKey AS accountKey, a.name AS account, openCases, noteCount,
            [x IN caseRows | x[1]] AS subjects,
            coalesce(CASE WHEN written = '' THEN 'unaware'
