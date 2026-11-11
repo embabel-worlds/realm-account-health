@@ -6,7 +6,10 @@
 #
 # They name no product, and sweep each system by its bare vocabulary label before joining through
 # the spine, like the views in health.yml and for the same reason: a walk out from each account
-# refuses above ~200 accounts.
+# refuses above ~200 accounts. That includes a CRM account reached from a follow-up or a meeting:
+# `TRACKED_AS` rides only a CRM the query has swept whole, so `MATCH (k:CrmAccount)` comes first
+# even where the follow-up already names the company. Without it, 5,000 accounts asked the CRM
+# about every one of them and the duty refused.
 #
 # A SET, THEN A NEGATION. "No follow-up exists" is the shape of most of these, and an OPTIONAL
 # MATCH across a sweep is the one form health.yml records as unreliable. So the things that DO
@@ -23,7 +26,8 @@
   # says somebody will do something by a date, which is what "picked up" means to the account's
   # owner — and it is what Steward's repair proposes, so the duty and its repair agree.
   cypher: |
-    MATCH (f:FollowUp)-[:FOLLOW_UP_ON]->(k:CrmAccount)
+    MATCH (k:CrmAccount)
+    MATCH (f:FollowUp)-[:FOLLOW_UP_ON]->(k)
     MATCH (fa:CustomerAccount)-[:TRACKED_AS]->(k)
     WITH collect(DISTINCT fa.accountKey) AS acknowledged
     MATCH (a:AtRiskAccount)
@@ -47,7 +51,8 @@
   cypher: |
     MATCH (m:Meeting)
     WHERE m.startsOn >= toString(date())
-    MATCH (m)-[:MEETING_WITH]->(k:CrmAccount)
+    MATCH (k:CrmAccount)
+    MATCH (m)-[:MEETING_WITH]->(k)
     MATCH (ma:CustomerAccount)-[:TRACKED_AS]->(k)
     WITH collect(DISTINCT ma.accountKey) AS booked
     MATCH (a:AtRiskAccount)
@@ -66,7 +71,8 @@
   # an invoice (Lago cannot), that date is the load date plus the payment terms, so a freshly loaded
   # book has nothing 14 days overdue yet, and this view says so by answering empty.
   cypher: |
-    MATCH (f:FollowUp)-[:FOLLOW_UP_ON]->(k:CrmAccount)
+    MATCH (k:CrmAccount)
+    MATCH (f:FollowUp)-[:FOLLOW_UP_ON]->(k)
     MATCH (fa:CustomerAccount)-[:TRACKED_AS]->(k)
     WITH collect(DISTINCT fa.accountKey) AS chased
     MATCH (i:BillingInvoice)

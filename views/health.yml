@@ -262,7 +262,8 @@
     MATCH (a:CustomerAccount {accountKey: domain})
     WITH a
     MATCH (k:CrmAccount)
-    MATCH (a)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o:Opportunity)-[:HAS_NOTE]->(n:AccountNote)
+    MATCH (n:AccountNote)
+    MATCH (a)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o:Opportunity)-[:HAS_NOTE]->(n)
     RETURN a.accountKey AS accountKey, 'a deal' AS writtenOn, o.title AS subject,
            n.writtenOn AS date, n.body AS body
     ORDER BY date DESC
