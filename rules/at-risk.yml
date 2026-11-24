@@ -10,6 +10,16 @@
 # round, so a shared `reason` would show an account's last reason and lose the rest. A reader
 # gets every reason by reading every `risk*` property that is set.
 #
+# REASONS ARE COUNTS AND DATES, NEVER MONEY. A clause stamps ONE value per account, and money is
+# per currency: an account owing in two currencies has no single amount owed, and a property that
+# summed them would be a number of nothing. So the two money clauses stamp how MANY (unpaid invoices,
+# open deals) and the amounts are read, per currency, from the fact views (HealthReceivablesByAccount,
+# HealthPipelineByAccount), which a reader joins by accountKey.
+#
+# OPEN MEANS status 'open' — waiting on us — exactly as every fact view counts it. Pending is
+# waiting on the customer, and counting it here made the rules and the views disagree about the
+# same account.
+#
 # THE FACTS ARE FETCHED, so the rule set says which it needs. A rule body reads what the
 # transaction already holds and cannot fetch; cases, invoices, subscriptions and deals all live
 # in other systems. `requires:` walks each of them out from the accounts before the rules run.
@@ -24,20 +34,21 @@ derives: AtRiskAccount
 description: >-
   A customer account with something wrong that somebody should act on, concluded across the
   CRM, the helpdesk and billing. Every reason that holds is recorded as its own `risk*`
-  property, so "why is this account at risk" is read off the account and never guessed.
+  property — a count, a date or a flag, never an amount of money — so "why is this account at
+  risk" is read off the account and never guessed.
   Computed when asked from the three systems as they stand; nothing is stored, so an account
   leaves the label the moment its last reason stops being true.
 params:
   renewalDays: { type: int, default: 120, description: "A renewal inside this many days, with a case open, is a risk." }
   longThread:  { type: int, default: 15,  description: "An open case with at least this many replies is a risk on its own." }
 properties:
-  riskOwingAndWaiting: { type: number,  description: "Amount unpaid while a support case is open — possibly one conversation." }
-  riskSellingIntoTrouble: { type: number, description: "Open pipeline value while a support case is open." }
+  riskUnpaidWhileWaiting: { type: int,  description: "Unpaid invoices (payment not succeeded) while a support case is open — possibly one conversation. A count; the amount owed, per currency, is HealthReceivablesByAccount's." }
+  riskOpenDealsWhileWaiting: { type: int, description: "Open deals with a value while a support case is open. A count; the pipeline, per currency, is HealthPipelineByAccount's." }
   riskFailedPayments: { type: int,      description: "Invoices billing tried to collect and could not." }
   riskRenewsOn:       { type: string,   description: "The next renewal date, when it falls inside the window and a case is open." }
   riskLongestThread:  { type: int,      description: "Replies on the longest open case, when it has run past the threshold." }
-  riskHighPriorityCases: { type: int,   description: "Open cases marked high or urgent." }
-  riskUnownedBilling: { type: boolean,  description: "True when billing invoices this account and the CRM has no record of it." }
+  riskHighPriorityCases: { type: int,   description: "Open cases marked urgent or high." }
+  riskBilledUnknownToCrm: { type: boolean, description: "True when billing has this account as a customer and the CRM has no record of it." }
 # BOOK SWEEPS, THEN RIDE THE SPINE — the same inversion the fact views in ../views are
 # built on, and the engine's answer to embabel/me#1489. Written as `(a:CustomerAccount)-[:HAS_CASE]->(c)`
 # alone, a demand fetches once PER ACCOUNT, which is refused above `maxAnchors` (200): at 2,030
@@ -46,8 +57,8 @@ properties:
 # the installed product answers through its book door) and then names the vocabulary edge from the
 # account to the SAME alias; that edge is declared `ridesHub: true` in its realm, so the engine links
 # each account to its records by the spine's own key instead of fetching, and the bodies traverse the
-# edges they always did. The case sweep is every status because the rules count `pending` cases as
-# open. The CRM sweep is every COMPANY, prospects included: it once swept customers who had bought,
+# edges they always did. The case sweep is every status because a ridden edge must see every case it
+# would reach; the bodies then keep the open ones. The CRM sweep is every COMPANY, prospects included: it once swept customers who had bought,
 # TRACKED_AS rode that, and three prospects billing knows were concluded "billed with no owner".
 # Every demand PROJECTS what it sweeps: a demand that only asks whether something exists is fetched as an existence check —
 # one page — and the bodies then see 25 of 688 cases.
@@ -65,25 +76,24 @@ requires:
   - materialize: "MATCH (k:CrmAccount) MATCH (o:Opportunity) MATCH (k)-[:HAS_OPPORTUNITY]->(o) RETURN o.title AS title"
     description: "Every opportunity in the CRM, linked to its company."
 rules:
-  - derive: "(a:AtRiskAccount {riskOwingAndWaiting: owed})"
+  - derive: "(a:AtRiskAccount {riskUnpaidWhileWaiting: unpaid})"
     from: |
       MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
       WHERE i.paymentStatus <> 'succeeded'
-      WITH a, sum(i.amount - i.amountPaid) AS owed
+      WITH a, count(i) AS unpaid
       MATCH (a)-[:HAS_CASE]->(c:SupportCase)
-      WHERE c.status IN ['open', 'pending']
-      WITH a, owed, count(c) AS openCases
+      WHERE c.status = 'open'
+      WITH a, unpaid, count(c) AS openCases
       WHERE openCases > 0
 
-  - derive: "(a:AtRiskAccount {riskSellingIntoTrouble: pipeline})"
+  - derive: "(a:AtRiskAccount {riskOpenDealsWhileWaiting: deals})"
     from: |
       MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-      WHERE c.status IN ['open', 'pending']
+      WHERE c.status = 'open'
       WITH DISTINCT a
       MATCH (a)-[:TRACKED_AS]->(:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)
-      WHERE o.status = 'open'
-      WITH a, sum(o.amount) AS pipeline
-      WHERE pipeline > 0
+      WHERE o.status = 'open' AND o.amount > 0
+      WITH a, count(o) AS deals
 
   - derive: "(a:AtRiskAccount {riskFailedPayments: failed})"
     from: |
@@ -94,7 +104,7 @@ rules:
   - derive: "(a:AtRiskAccount {riskRenewsOn: renewsOn})"
     from: |
       MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-      WHERE c.status IN ['open', 'pending']
+      WHERE c.status = 'open'
       WITH DISTINCT a
       MATCH (a)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription)
       WHERE s.status = 'active' AND s.periodEndsOn IS NOT NULL
@@ -105,16 +115,16 @@ rules:
   - derive: "(a:AtRiskAccount {riskLongestThread: replies})"
     from: |
       MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-      WHERE c.status IN ['open', 'pending'] AND c.replyCount >= $longThread
+      WHERE c.status = 'open' AND c.replyCount >= $longThread
       WITH a, max(c.replyCount) AS replies
 
   - derive: "(a:AtRiskAccount {riskHighPriorityCases: n})"
     from: |
       MATCH (a:CustomerAccount)-[:HAS_CASE]->(c:SupportCase)
-      WHERE c.status IN ['open', 'pending'] AND c.priority IN ['urgent', 'high']
+      WHERE c.status = 'open' AND c.priority IN ['urgent', 'high']
       WITH a, count(c) AS n
 
-  - derive: "(a:AtRiskAccount {riskUnownedBilling: true})"
+  - derive: "(a:AtRiskAccount {riskBilledUnknownToCrm: true})"
     from: |
       MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc:BillingCustomer)
       OPTIONAL MATCH (a)-[:TRACKED_AS]->(k:CrmAccount)

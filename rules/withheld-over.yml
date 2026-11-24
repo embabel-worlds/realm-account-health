@@ -14,11 +14,11 @@
 name: account-health/possibly-withheld-over
 derives: POSSIBLY_WITHHELD_OVER
 description: >-
-  An unpaid invoice and a still-open support case on the same account, where the case was opened
-  before the invoice's due date. `owed` is what the invoice still owes; `openedOn` when the case
+  An unpaid invoice (payment not succeeded) and an open support case (status open) on the same
+  account, where the case was opened before the invoice's due date. `owed` is what the invoice still owes; `openedOn` when the case
   was raised. Concluded across billing and the helpdesk; computed when asked, never stored.
 properties:
-  owed:     { type: number, description: "What the invoice still owes, in major units of its currency." }
+  owed:     { type: number, description: "What the invoice still owes (amount less amountPaid), in major units of the invoice's currency." }
   openedOn: { type: string, description: "The day the case was raised." }
 maxPairs: 20000
 # BOOK SWEEPS, THEN RIDE THE SPINE — the same door inversion the fact views in ../views were
@@ -29,7 +29,7 @@ maxPairs: 20000
 # then names the vocabulary edge from the account to the SAME alias; that edge is declared
 # `ridesHub: true` in its realm, so the engine links each account to its records by the spine's
 # own key instead of fetching, and the bodies traverse the edges they always did. The desk sweep
-# is `all` because the rules count `pending` cases as open, and every demand PROJECTS what it
+# is `all` because a ridden edge must see every case it would reach, and every demand PROJECTS what it
 # sweeps: a demand that only asks whether something exists is fetched as an existence check —
 # one page — and the bodies then see 25 of 688 cases.
 requires:
@@ -45,5 +45,5 @@ rules:
       MATCH (a:CustomerAccount)-[:BILLED_AS]->(:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
       WHERE i.paymentStatus <> 'succeeded' AND i.dueOn IS NOT NULL
       MATCH (a)-[:HAS_CASE]->(c:SupportCase)
-      WHERE c.status IN ['open', 'pending'] AND c.openedOn IS NOT NULL AND c.openedOn <= i.dueOn
+      WHERE c.status = 'open' AND c.openedOn IS NOT NULL AND c.openedOn <= i.dueOn
       WITH i, c, i.amount - i.amountPaid AS owed, c.openedOn AS openedOn

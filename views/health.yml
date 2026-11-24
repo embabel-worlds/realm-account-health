@@ -33,7 +33,19 @@
 # same on a small book and refused on a real one.
 #
 # Every view name carries the prefix because view names resolve globally across realms. Money is in
-# major units of `currency`; NEVER add across currencies.
+# major units of `currency`, and NEVER added across currencies: every view that sums money groups by
+# `currency`, so an account billed in two currencies has two rows, one per currency, and a reader
+# who wants one number per account has to choose a currency first — which is the honest position.
+#
+# ONE ACCOUNT IS THE OTHER SHAPE. A book-wide view sweeps every system because it is about every
+# account; asked about one account, a sweep would list every record in every system to keep one
+# company's. So the `…ForAccount` views take the account's domain and ask each system about it
+# alone: HealthCasesForAccount pins the case's own accountKey, which the helpdesk's company door
+# answers; billing and the CRM walk out from the account, `(a:CustomerAccount {accountKey:
+# $accountKey})-[:BILLED_AS]->(…)` — a handful of source calls whatever the book's size.
+# Their `accountKey` is the domain, matched exactly, never a name: near-named companies ('Acme',
+# 'Acme AB', 'Acme Group') are different accounts with different domains. HealthFindAccount turns a
+# name into a domain, exactly by default.
 
 # ── Who the accounts are ──────────────────────────────────────────────────────────────────
 
@@ -48,10 +60,11 @@
 # reading a record, and a record not read keys no account.
 - name: HealthKnownAccounts
   description: >-
-    Reads the CRM's companies, the billing system's customers and the helpdesk's cases in full,
-    so that every company any of them knows is a customer account, and says how many each holds.
-    Run it before asking about accounts across the book. THE answer for "how many accounts do we
-    have" and "how many companies does each system know".
+    How many accounts we have, and how many companies each system knows. Reads the CRM's companies,
+    the billing system's customers and the helpdesk's cases in full, so that every company any of
+    them knows is a customer account, and says how many each holds. Run it before asking about
+    accounts across the book. THE answer for "how many accounts do we have" and "how many companies
+    does each system know". Counts only; it lists no accounts.
   outputLabel: KnownAccountsRow
   cypher: |
     MATCH (k:CrmAccount)
@@ -70,11 +83,12 @@
 # asks the collecting one about the handful it is showing.
 - name: HealthOpenCaseCountsByAccount
   description: >-
-    Per account: HOW MANY support cases a customer is still waiting on — the count, the longest
-    back-and-forth, and when the oldest was opened. THE answer for "which customers have open
-    support cases" and "who is waiting on us" across the whole book. An account absent from this
-    list has nothing open. For WHAT the cases are about, ask HealthOpenCasesByAccount about the
-    accounts this names.
+    How many open support cases each account has, across the whole book. Per account: HOW MANY
+    support cases a customer is still waiting on (status open; pending means waiting on the customer
+    and is not counted) — openCases, longestThread (most replies on one of them) and firstOpened
+    (the oldest openedOn). THE answer for "which customers have open support cases" and "who is
+    waiting on us" across the whole book. An account absent from this list has nothing open. For
+    WHAT the cases are about, HealthOpenCasesByAccount; for one account, HealthCasesForAccount.
   outputLabel: AccountOpenCaseCountsRow
   # The `WITH` that projects `c.accountKey` is load-bearing: it blocks AGGREGATE PUSHDOWN. A helpdesk
   # that can count at the source would otherwise answer `count(c)` with stand-in nodes carrying no
@@ -91,25 +105,30 @@
            max(c.replyCount) AS longestThread, min(c.openedOn) AS firstOpened
     ORDER BY openCases DESC, longestThread DESC
 
-- name: HealthUrgentCaseCountsByAccount
+- name: HealthHighPriorityCaseCountsByAccount
   description: >-
-    Per account: how many of the open support cases are URGENT or HIGH priority. The escalation
-    signal behind HealthOpenCaseCountsByAccount — an account absent from this list has open cases
-    but none of them urgent.
-  outputLabel: AccountUrgentCaseCountsRow
+    How many open urgent-or-high priority cases each account has. Per account: how many of the open
+    support cases are high priority, meaning priority URGENT or HIGH (the same "highPriority" as
+    HealthOpenCasesByAccount). Not a count of urgent cases alone: for those, filter the cases on
+    priority = 'urgent'. The escalation signal behind HealthOpenCaseCountsByAccount; an account
+    absent from this list has open cases but none high priority.
+  outputLabel: AccountHighPriorityCaseCountsRow
   cypher: |
     MATCH (c:SupportCase)
     WHERE c.status = 'open' AND c.priority IN ['urgent', 'high']
     WITH c, c.accountKey AS domain
     MATCH (a:CustomerAccount {accountKey: domain})
-    RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS urgentCases
-    ORDER BY urgentCases DESC
+    RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS highPriorityCases
+    ORDER BY highPriorityCases DESC
 
 - name: HealthOpenCasesByAccount
   description: >-
-    Per account: WHAT the open support cases are about — their subjects, ids and links, alongside
-    the same counts. The detail behind HealthOpenCaseCountsByAccount, for every account with an
-    open case; it takes no parameters. To ask about one account, filter its rows by accountKey.
+    What each account's open support cases are about, across the whole book. Per account: WHAT the
+    open support cases are about — their subjects, ids and links, alongside the same counts
+    (highPriority counts priority urgent OR high). The detail behind HealthOpenCaseCountsByAccount,
+    for every account with an open case, read off one sweep of the whole desk. For ONE account ask
+    HealthCasesForAccount, which asks the helpdesk about that account alone. Only open cases;
+    resolved and pending ones are not here.
   outputLabel: AccountOpenCasesRow
   cypher: |
     MATCH (c:SupportCase)
@@ -124,9 +143,11 @@
 
 - name: HealthResolvedCasesByAccount
   description: >-
-    Per account: the support cases that have been RESOLVED — how many, when the latest was
-    closed, and what they were about. THE answer for "what have we fixed for <customer>" and
-    "who have we recently helped".
+    Each account's resolved support cases: how many, and the latest. Per account: the support cases
+    that have been RESOLVED — resolvedCases, lastResolved (the latest closedOn) and their subjects,
+    across every account. THE answer for "who have we recently helped". For ONE customer ("what have
+    we fixed for <customer>") ask HealthCasesForAccount with status resolved, which asks the
+    helpdesk about that account alone. Only resolved cases; open and pending ones are not here.
   outputLabel: AccountResolvedCasesRow
   cypher: |
     MATCH (c:SupportCase)
@@ -137,17 +158,56 @@
            max(c.closedOn) AS lastResolved, collect(c.subject) AS subjects
     ORDER BY lastResolved DESC
 
+# ONE account, asked of the helpdesk for that account alone. The per-account views above read the
+# whole book, which is right for a question about the whole book; filtering their rows to answer about
+# one company reads every case on the desk to keep a handful. A case carries the vocabulary's
+# `accountKey`, so pinning it names no product and lets the helpdesk's realm fetch that company alone
+# (realm-chatwoot: one call per 25 of its cases, where the sweep is one per 25 on the whole desk).
+#
+# The pin is written on the case, as a plain equality on the parameter, and that is load-bearing: it
+# is what the engine reads as "this company only". The optional status is tested on a plain variable
+# after a WITH, so an empty parameter cannot be lifted into the fetch and filter out every row.
+- name: HealthCasesForAccount
+  description: >-
+    One account's support cases, asked of the helpdesk for it alone. One account's support cases,
+    open first and newest first: subject, status, priority, kind, who raised it, when it was opened
+    and closed, and a link. THE answer for "what has <customer> raised with support", "how many open
+    cases does <customer> have" and "what have we fixed for <customer>". Asks the helpdesk about
+    that account alone, not the whole book.
+  outputLabel: AccountCaseRow
+  params:
+    accountKey:
+      type: string
+      required: true
+      description: "The account's domain, exactly: lower case, no www, e.g. acme.com."
+    status:
+      type: string
+      default: ""
+      description: "Only this status, exactly: open, pending or resolved. Empty = every status."
+  cypher: |
+    MATCH (c:SupportCase)
+    WHERE c.accountKey = $accountKey
+    WITH c, c.status AS caseStatus
+    WHERE ($status = '' OR caseStatus = $status)
+    RETURN c.accountKey AS accountKey, c.id AS caseId, c.status AS status, c.subject AS subject,
+           c.priority AS priority, c.kind AS kind, c.requesterName AS requester,
+           c.requesterEmail AS requesterEmail, c.openedOn AS openedOn, c.closedOn AS closedOn,
+           c.replyCount AS replies, c.sourceUrl AS url
+    ORDER BY CASE c.status WHEN 'open' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, c.openedOn DESC, c.id DESC
+
 # Billing records carry no accountKey (the vocabulary leaves a billing system to reach the account by
 # BILLED_AS), so these sweep the billing customers AND the records, then join. The invoice and
 # subscription edges from a customer ride the record sweep for the same reason BILLED_AS rides the
 # customer sweep: one page walk per kind, never one call per customer.
 - name: HealthReceivablesByAccount
   description: >-
-    Per account, MOST OWED FIRST: what is owed and not collected — the amount, unpaid invoices
-    counted, how many FAILED collection, and links to the invoices. THE answer for "which
-    accounts owe us the most", "which accounts owe us money", "who owes us the most money" and
-    "who has a failed payment". "The most" means the largest AMOUNT, never the most invoices.
-    An account absent from this list owes nothing.
+    What each account owes us, per currency, most owed first. Per account and CURRENCY, MOST OWED
+    FIRST: what is owed and not collected — owed (amount less amountPaid, in major units of
+    `currency`), unpaidInvoices (payment not succeeded, which includes invoices not yet due),
+    failedInvoices (collection tried and failed), and links. THE answer for "which accounts owe us
+    the most", "who owes us money" and "who has a failed payment". "The most" means the largest
+    AMOUNT, compared within one currency, never the most invoices. An account absent from this list
+    owes nothing. For one account's invoices, HealthReceivablesForAccount.
   outputLabel: AccountReceivablesRow
   cypher: |
     MATCH (i:BillingInvoice)
@@ -163,9 +223,10 @@
 
 - name: HealthBillingByAccount
   description: >-
-    Per account: every invoice billing has issued them, and how many were paid. THE answer for
-    "is <customer> a good payer" and the way to tell a billed account from one billing has
-    never heard of. An account absent from this list is not billed.
+    How many invoices each account was sent, and how many were paid. Per account and currency:
+    invoices billing has issued them, and paidInvoices (payment succeeded). THE answer for "is
+    <customer> a good payer" and the way to tell a billed account from one billing has never heard
+    of. An account absent from this list is not billed.
   outputLabel: AccountBillingRow
   cypher: |
     MATCH (i:BillingInvoice)
@@ -178,10 +239,12 @@
 
 - name: HealthRecurringByAccount
   description: >-
-    Per account: what they pay on a schedule — active subscriptions, the amount per billing
-    period, what the products are, and when the next one renews. THE answer for "how much is
-    <customer> worth to us", "who are our biggest customers" and "who renews soon". Amounts are
-    per billing period as the plan defines it; do not annualize them.
+    What each account pays per billing period, per currency. Per account and currency: what they pay
+    on a schedule — activeSubscriptions, perPeriod (the sum of their per-period prices, in major
+    units of `currency`), the products, and nextRenewal (the earliest periodEndsOn). THE answer for
+    "how much is <customer> worth to us", "who are our biggest customers" and "who renews soon".
+    perPeriod is per billing period as each plan defines it: do not annualize it, and where one
+    account's plans bill on different intervals it is not one period's revenue.
   outputLabel: AccountRecurringRow
   cypher: |
     MATCH (s:BillingSubscription)
@@ -198,16 +261,18 @@
 # makes riding it sound (a sweep of paying customers only would lose every prospect without a word).
 - name: HealthPipelineByAccount
   description: >-
-    Per account: the deals sales has with them — open pipeline value, the open deals by name,
-    when the next is due to close, and how many were won and lost. THE answer for "what are we
-    trying to sell <customer>" and "how much pipeline do we have with <customer>". An account
-    absent from this list has no deal in the CRM, open or closed.
+    Each account's deals: open pipeline per currency, won and lost. Per account and currency: the
+    deals sales has with them — openPipeline (the UNWEIGHTED sum of open deals' amounts, in major
+    units of `currency`), the open deals by name, nextClose (the earliest expected close of an open
+    deal), and how many were won and lost. THE answer for "what are we trying to sell <customer>"
+    and "how much pipeline do we have with <customer>". An account absent from this list has no deal
+    in the CRM, open or closed. Unweighted: probability is not applied.
   outputLabel: AccountPipelineRow
   cypher: |
     MATCH (o:Opportunity)
     MATCH (k:CrmAccount)
     MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o)
-    RETURN a.accountKey AS accountKey, a.name AS account,
+    RETURN a.accountKey AS accountKey, a.name AS account, o.currency AS currency,
            sum(CASE WHEN o.status = 'open' THEN o.amount ELSE 0 END) AS openPipeline,
            sum(CASE WHEN o.status = 'open' THEN 1 ELSE 0 END) AS openDeals,
            sum(CASE WHEN o.status = 'won' THEN 1 ELSE 0 END) AS wonDeals,
@@ -218,10 +283,10 @@
 
 - name: HealthCrmRecordByAccount
   description: >-
-    Per account: the CRM's own record of it, and a link to open it there. THE way to tell an
-    account sales knows from one it does not: an account absent from this list has no record in
-    the CRM at all — customer or prospect — however much it is billed or however many cases it
-    has open.
+    Which accounts the CRM has a record of, with a link to it. Per account: the CRM's own record of
+    it, and a link to open it there. THE way to tell an account sales knows from one it does not: an
+    account absent from this list has no record in the CRM at all — customer or prospect — however
+    much it is billed or however many cases it has open.
   outputLabel: AccountCrmRecordRow
   cypher: |
     MATCH (k:CrmAccount)
@@ -235,8 +300,10 @@
 # accounts' records, which a product realm may answer in batches; TRACKED_AS rides the company sweep.
 - name: HealthCompanyNotesForOpenCases
   description: >-
-    For every account with an open support case: the notes on the company's own CRM record,
-    with their text and date. Part of "does the CRM know about this customer's problem".
+    CRM notes on the company, for accounts with an open case. For every account with an open support
+    case: the notes on the company's own CRM record, with their text and date. Part of "does the CRM
+    know about this customer's problem". Only accounts with an open case; notes on deals and people
+    are in the two views beside it.
   outputLabel: OpenCaseCompanyNoteRow
   cypher: |
     MATCH (c:SupportCase)
@@ -252,8 +319,9 @@
 
 - name: HealthDealNotesForOpenCases
   description: >-
-    For every account with an open support case: the notes on its DEALS in the CRM, with their
-    text, date and the deal they are on.
+    CRM notes on the deals, for accounts with an open case. For every account with an open support
+    case: the notes on its DEALS in the CRM, with their text, date and the deal they are on. Only
+    accounts with an open case.
   outputLabel: OpenCaseDealNoteRow
   cypher: |
     MATCH (c:SupportCase)
@@ -270,8 +338,9 @@
 
 - name: HealthContactNotesForOpenCases
   description: >-
-    For every account with an open support case: the notes on the PEOPLE the CRM knows there,
-    with their text, date and who they are about.
+    CRM notes on the people, for accounts with an open case. For every account with an open support
+    case: the notes on the PEOPLE the CRM knows there, with their text, date and who they are about.
+    Only accounts with an open case.
   outputLabel: OpenCaseContactNoteRow
   cypher: |
     MATCH (c:SupportCase)
@@ -292,10 +361,11 @@
 
 - name: HealthSellingIntoTrouble
   description: >-
-    Accounts where sales has an OPEN DEAL and the customer has an OPEN SUPPORT CASE, largest
-    deal first — with the longest thread and what it is about. THE answer for "are we about to
-    pitch an unhappy customer", "which deals are at risk from support problems" and "what
-    should sales know before the next call".
+    Accounts with an open deal AND an open support case. Accounts where sales has an OPEN DEAL and
+    the customer has an OPEN SUPPORT CASE, largest open pipeline first — the longest thread, the
+    case subjects, and openPipeline (unweighted, per currency: one row per account and currency).
+    THE answer for "are we about to pitch an unhappy customer", "which deals are at risk from
+    support problems" and "what should sales know before the next call".
   outputLabel: SellingIntoTroubleRow
   cypher: |
     MATCH (c:SupportCase)
@@ -307,17 +377,20 @@
     WHERE o.status = 'open'
     MATCH (k:CrmAccount)
     MATCH (a)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o)
-    WITH a, openCases, longestThread, subjects, sum(o.amount) AS openPipeline, collect(o.title) AS deals
+    WITH a, openCases, longestThread, subjects, o.currency AS currency, sum(o.amount) AS openPipeline,
+         collect(o.title) AS deals
     RETURN a.accountKey AS accountKey, a.name AS account, openCases, longestThread, subjects,
-           openPipeline, deals
+           openPipeline, currency, deals
     ORDER BY openPipeline DESC
 
 - name: HealthOwingAndWaiting
   description: >-
-    Accounts with OPEN SUPPORT CASES AND UNPAID INVOICES at the same time, most owed first. THE
-    answer for "which accounts have open support cases and unpaid invoices", "who owes us money
-    and is waiting on support" and "who is not paying and also has a problem open" — the
-    accounts where a collections call and a support fix are the same conversation.
+    Accounts with unpaid invoices AND an open support case. Accounts with OPEN SUPPORT CASES AND
+    UNPAID INVOICES at the same time, most owed first — one row per account and currency, owed in
+    major units of `currency`. THE answer for "which accounts have open support cases and unpaid
+    invoices", "who owes us money and is waiting on support" and "who is not paying and also has a
+    problem open" — the accounts where a collections call and a support fix are the same
+    conversation.
   outputLabel: OwingAndWaitingRow
   cypher: |
     MATCH (c:SupportCase)
@@ -329,17 +402,19 @@
     WHERE i.paymentStatus <> 'succeeded'
     MATCH (bc:BillingCustomer)
     MATCH (a)-[:BILLED_AS]->(bc)-[:HAS_INVOICE]->(i)
-    WITH a, openCases, subjects, count(i) AS unpaidInvoices, sum(i.amount - i.amountPaid) AS owed,
-         collect(DISTINCT i.currency)[0] AS currency
+    WITH a, openCases, subjects, i.currency AS currency, count(i) AS unpaidInvoices,
+         sum(i.amount - i.amountPaid) AS owed
     RETURN a.accountKey AS accountKey, a.name AS account, unpaidInvoices, owed, currency,
            openCases, subjects
     ORDER BY owed DESC
 
 - name: HealthRevenueBehindCases
   description: >-
-    Recurring revenue sitting behind open support cases: every paying account with something
-    open, what it pays per billing period, and when it next renews. THE answer for "how much
-    revenue is at risk from open support cases" and "which unhappy customers renew soonest".
+    Recurring revenue from accounts with an open support case. Recurring revenue sitting behind open
+    support cases: every account with an active subscription and an open case, perPeriod (what it
+    pays per billing period, in major units of `currency`; one row per account and currency) and
+    nextRenewal. THE answer for "how much recurring revenue is at risk from open support cases" and
+    "which unhappy customers renew soonest". Total it per currency, never across.
   outputLabel: RevenueBehindCasesRow
   cypher: |
     MATCH (c:SupportCase)
@@ -353,31 +428,127 @@
     WHERE s.status = 'active'
     MATCH (bc:BillingCustomer)
     MATCH (a)-[:BILLED_AS]->(bc)-[:HAS_SUBSCRIPTION]->(s)
-    WITH a, openCases, highPriority, longestThread, sum(s.amount) AS perPeriod,
-         collect(DISTINCT s.currency)[0] AS currency, min(s.periodEndsOn) AS nextRenewal
+    WITH a, openCases, highPriority, longestThread, s.currency AS currency, sum(s.amount) AS perPeriod,
+         min(s.periodEndsOn) AS nextRenewal
     RETURN a.accountKey AS accountKey, a.name AS account, openCases, highPriority, longestThread,
            perPeriod, currency, nextRenewal
     ORDER BY perPeriod DESC
 
 - name: HealthBilledButUnknownToCrm
   description: >-
-    Customers we BILL that the CRM has NO RECORD of. THE answer for "who are we billing that
-    the CRM has no record of", "who are we billing that sales has never heard of", "which paying
-    customers are missing from the CRM" and "which customers have no account owner". These are
-    business customers in the billing system — nothing to do with the user's own household bills.
+    Customers we BILL that the CRM has NO RECORD of. THE answer for "who are we billing that the CRM has no record of", "who are we billing that
+    sales has never heard of", "which paying customers are missing from the CRM" and "which
+    customers have no account owner". These are business customers in the billing system — nothing
+    to do with the user's own household bills.
   outputLabel: BilledButUnknownRow
-  # Both sweeps first, so the absence is judged against the WHOLE CRM: with TRACKED_AS asked per
-  # account the answer is the same here and refused on a real book.
-  # `collect(k)` and not `count(k)`: a count the CRM can answer at the source would fetch no records,
-  # and with none swept TRACKED_AS falls back to asking per account.
+  # A SET, THEN A NEGATION — the shape views/agents.yml uses for every absence. The whole CRM is
+  # swept and the accounts it tracks are collected as ONE list of domains; the billing customers
+  # are then swept and kept when their account is not in it. It used to carry `collect(k)` — every
+  # CRM record, as nodes — into every billing row and then OPTIONAL MATCH TRACKED_AS per account,
+  # the form health.yml's header records as unreliable across a sweep. Projecting a property also
+  # keeps the CRM sweep a fetch of records rather than a count the CRM could answer at the source,
+  # which would sweep nothing for TRACKED_AS to ride.
   cypher: |
     MATCH (k:CrmAccount)
-    WITH collect(k) AS crm
+    MATCH (ka:CustomerAccount)-[:TRACKED_AS]->(k)
+    WITH collect(DISTINCT ka.accountKey) AS tracked
     MATCH (bc:BillingCustomer)
     MATCH (a:CustomerAccount)-[:BILLED_AS]->(bc)
-    OPTIONAL MATCH (a)-[:TRACKED_AS]->(t:CrmAccount)
-    WITH a, bc, count(t) AS crmRecords
-    WHERE crmRecords = 0
+    WHERE NOT a.accountKey IN tracked
     RETURN a.accountKey AS accountKey, a.name AS account, bc.email AS billingEmail,
            bc.customerSince AS billedSince
     ORDER BY account
+
+# ── One account ───────────────────────────────────────────────────────────────────────────
+#
+# The same facts for ONE account (its cases are HealthCasesForAccount, above), walking out from it.
+# Each reads one system, so an account a system
+# does not know is simply absent from that view's answer rather than nulling the others (embabel/me#1348).
+# The account must already be an account — keyed by some system's read (HealthKnownAccounts) — or
+# there is nothing to walk out from, and the answer is empty.
+
+- name: HealthFindAccount
+  description: >-
+    Find an account's domain from its company name, exactly. Turns a company NAME into its account:
+    the accountKey (domain) and name of every account whose name is exactly `name`. Exact by default
+    because near-named companies are different accounts — 'Acme', 'Acme AB' and 'Acme Group' each
+    have their own domain. Set partial to true to list every account whose name contains `name`,
+    ignoring case, and then pick by domain. Reads the accounts the world already holds; asks no
+    system. Only accounts the world already holds; a company no system has been read for is not
+    found.
+  params:
+    name:
+      type: string
+      required: true
+      description: "The company's name, exactly as the account holds it ('Acme AB'). Not a domain."
+    partial:
+      type: boolean
+      default: false
+      description: "false (the default): exact name only. true: every account whose name contains it, ignoring case."
+  outputLabel: FoundAccountRow
+  cypher: |
+    MATCH (a:CustomerAccount)
+    WHERE ($partial AND toLower(a.name) CONTAINS toLower($name)) OR (NOT $partial AND a.name = $name)
+    RETURN a.accountKey AS accountKey, a.name AS account, a.website AS website,
+           a.relationship AS relationship
+    ORDER BY account, accountKey
+
+- name: HealthReceivablesForAccount
+  description: >-
+    One account's unpaid invoices, asked of billing for it alone. ONE account's unpaid invoices
+    (payment not succeeded, which includes invoices not yet due), soonest due first: number,
+    paymentStatus, owed (amount less amountPaid, in major units of `currency`), issuedOn, dueOn and
+    a link. Total owed per currency, never across. Asks billing about this domain alone.
+    `accountKey` is the domain, exactly ('acme.com').
+  params:
+    accountKey:
+      type: string
+      required: true
+      description: "The account's domain, exactly as accountKey holds it: lower case, no scheme or www ('acme.com')."
+  outputLabel: AccountReceivableRow
+  cypher: |
+    MATCH (a:CustomerAccount {accountKey: $accountKey})-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_INVOICE]->(i:BillingInvoice)
+    WHERE i.paymentStatus <> 'succeeded'
+    RETURN a.accountKey AS accountKey, a.name AS account, i.number AS invoice,
+           i.paymentStatus AS paymentStatus, i.amount - i.amountPaid AS owed, i.currency AS currency,
+           i.issuedOn AS issuedOn, i.dueOn AS dueOn, i.sourceUrl AS invoiceUrl
+    ORDER BY dueOn
+
+- name: HealthPipelineForAccount
+  description: >-
+    One account's deals, asked of the CRM for it alone. ONE account's deals in the CRM, open, won
+    and lost: title, status, stage, amount (unweighted, in major units of `currency`), probability
+    (0 to 1) and closeOn (expected close while open, the decision date once won or lost). Open
+    first. Asks the CRM about this domain alone. `accountKey` is the domain, exactly ('acme.com').
+  params:
+    accountKey:
+      type: string
+      required: true
+      description: "The account's domain, exactly as accountKey holds it: lower case, no scheme or www ('acme.com')."
+  outputLabel: AccountDealRow
+  cypher: |
+    MATCH (a:CustomerAccount {accountKey: $accountKey})-[:TRACKED_AS]->(k:CrmAccount)-[:HAS_OPPORTUNITY]->(o:Opportunity)
+    RETURN a.accountKey AS accountKey, a.name AS account, o.title AS deal, o.status AS status,
+           o.stage AS stage, o.amount AS amount, o.currency AS currency, o.probability AS probability,
+           o.closeOn AS closeOn, o.sourceUrl AS dealUrl
+    ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'won' THEN 1 ELSE 2 END, closeOn
+
+- name: HealthRecurringForAccount
+  description: >-
+    One account's active subscriptions, asked of billing for it alone. ONE account's active
+    subscriptions: product, amount per interval (in major units of `currency`), interval, startedOn
+    and periodEndsOn (the next renewal). Sum per currency and interval, never across. Asks billing
+    about this domain alone. `accountKey` is the domain, exactly ('acme.com').
+  params:
+    accountKey:
+      type: string
+      required: true
+      description: "The account's domain, exactly as accountKey holds it: lower case, no scheme or www ('acme.com')."
+  outputLabel: AccountSubscriptionRow
+  cypher: |
+    MATCH (a:CustomerAccount {accountKey: $accountKey})-[:BILLED_AS]->(bc:BillingCustomer)-[:HAS_SUBSCRIPTION]->(s:BillingSubscription)
+    WHERE s.status = 'active'
+    RETURN a.accountKey AS accountKey, a.name AS account, s.product AS product, s.amount AS amount,
+           s.currency AS currency, s.interval AS interval, s.startedOn AS startedOn,
+           s.periodEndsOn AS periodEndsOn
+    ORDER BY periodEndsOn

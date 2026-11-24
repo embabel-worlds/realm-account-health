@@ -8,15 +8,22 @@
 # that without a self-join over every pair of cases written out by hand in every query that
 # wants it; as a relationship it is traversed like any other, by any surface.
 #
-# `a.accountKey < b.accountKey` is load-bearing. Without it the body binds every pair twice and
-# every account to itself — quadratic, and the first thing `maxPairs` exists to refuse.
+# QUADRATIC BY NATURE. Pairs grow with the square of the accounts in an area: eight areas and 1,667
+# accounts with an open case is ~170,000 pairs, which the engine refuses whole (maxPairs, then its
+# fact budget) rather than truncate. So no view of this realm reads it: the whole-book question is
+# asked by AREA (HealthSharedIssues), and one account's sharers by a direct query
+# (HealthSharedIssuesForAccount). It cannot be anchored from a view yet — a view's arguments are
+# substituted as literals and never reach a rule set's params (embabel/me#4177). It stays for a
+# small book and for a rule elsewhere that wants the relation; `a.accountKey < b.accountKey` stops
+# it binding every pair twice and every account to itself.
 
 name: account-health/shares-issue
 derives: SHARES_ISSUE
 description: >-
-  Two customer accounts each have an open support case in the same product area. `areas` lists
-  the areas they share and `shared` counts them. Concluded from the helpdesk's own `area-*`
-  tags on open cases; computed when asked, never stored.
+  Two customer accounts each have an open support case (status open) in the same product area.
+  `areas` lists the areas they share and `shared` counts them. Concluded from the helpdesk's own
+  `area-*` tags on open cases; computed when asked, never stored. Over a large book the pairs are
+  quadratic and the derivation is refused; ask HealthSharedIssues (by area) instead.
 properties:
   shared: { type: int, description: "How many product areas the two accounts both have an open case in." }
   areas:  { type: any, description: "The shared product areas, as the helpdesk labels them." }
@@ -29,7 +36,7 @@ maxPairs: 5000
 # then names the vocabulary edge from the account to the SAME alias; that edge is declared
 # `ridesHub: true` in its realm, so the engine links each account to its records by the spine's
 # own key instead of fetching, and the bodies traverse the edges they always did. The desk sweep
-# is `all` because the rules count `pending` cases as open, and every demand PROJECTS what it
+# is `all` because a ridden edge must see every case it would reach, and every demand PROJECTS what it
 # sweeps: a demand that only asks whether something exists is fetched as an existence check —
 # one page — and the bodies then see 25 of 688 cases.
 requires:
@@ -39,12 +46,11 @@ rules:
   - derive: "(a)-[:SHARES_ISSUE {shared: n, areas: areas}]->(b)"
     from: |
       MATCH (a:CustomerAccount)-[:HAS_CASE]->(ca:SupportCase)
-      WHERE ca.status IN ['open', 'pending']
+      WHERE ca.status = 'open'
       UNWIND ca.tags AS area
       WITH a, area WHERE area STARTS WITH 'area-'
       WITH DISTINCT a, area
       MATCH (b:CustomerAccount)-[:HAS_CASE]->(cb:SupportCase)
-      WHERE cb.status IN ['open', 'pending'] AND a.accountKey < b.accountKey AND area IN cb.tags
+      WHERE cb.status = 'open' AND a.accountKey < b.accountKey AND area IN cb.tags
       WITH a, b, collect(DISTINCT area) AS areas
       WITH a, b, areas, size(areas) AS n
-      WHERE n >= 1

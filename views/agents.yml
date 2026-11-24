@@ -18,10 +18,12 @@
 
 - name: StewardUnacknowledgedRisk
   description: >-
-    Accounts at risk that nobody has picked up: no follow-up is scheduled on the company in the
-    CRM. One row per account, with every reason it is at risk. THE answer for "which at-risk
-    accounts has nobody acknowledged" and the violations of Steward's first duty. An at-risk
-    account the CRM has never heard of is always here: it cannot be followed up where it is not.
+    At-risk accounts with no follow-up scheduled in the CRM. Accounts at risk that nobody has picked
+    up: no follow-up is scheduled on the company in the CRM. One row per account, with every reason
+    it is at risk (counts, dates and flags; amounts are in the fact views, per currency). THE answer
+    for "which at-risk accounts has nobody acknowledged" and the violations of Steward's first duty.
+    An at-risk account the CRM has never heard of is always here: it cannot be followed up where it
+    is not.
   # Acknowledged means a FOLLOW-UP, not a note. A note says somebody knew; a scheduled activity
   # says somebody will do something by a date, which is what "picked up" means to the account's
   # owner — and it is what Steward's repair proposes, so the duty and its repair agree.
@@ -33,17 +35,19 @@
     MATCH (a:AtRiskAccount)
     WHERE NOT a.accountKey IN acknowledged
     RETURN a.accountKey AS accountKey, a.name AS account,
-           a.riskFailedPayments AS failedPayments, a.riskOwingAndWaiting AS owingWhileCaseOpen,
-           a.riskSellingIntoTrouble AS pipelineIntoTrouble, a.riskHighPriorityCases AS highPriorityCases,
+           a.riskFailedPayments AS failedPayments, a.riskUnpaidWhileWaiting AS unpaidWhileWaiting,
+           a.riskOpenDealsWhileWaiting AS openDealsWhileWaiting, a.riskHighPriorityCases AS highPriorityCases,
            a.riskLongestThread AS longestThread, a.riskRenewsOn AS renewsOn,
-           a.riskUnownedBilling AS unknownToCrm
+           a.riskBilledUnknownToCrm AS unknownToCrm
     ORDER BY account
 
 - name: StewardRenewalsWithoutCall
   description: >-
-    At-risk accounts that renew within 60 days and have no call booked with them between now and
-    the renewal. One row per account, with its renewal date. THE answer for "which risky renewals
-    have no call booked" and the violations of Steward's second duty.
+    At-risk renewals within 60 days with no call booked. At-risk accounts that renew within 60 days
+    and have no call booked with them between now and the renewal. One row per account, with its
+    renewal date. THE answer for "which risky renewals have no call booked" and the violations of
+    Steward's second duty. A meeting booked only with a person at the company, not the company
+    record, is not seen.
   # The renewal is the one at-risk carries: a renewal inside the rule's window while a case is
   # open. A meeting counts when the COMPANY is an attendee; one booked with only a person at the
   # company is not seen here, because MEETING_WITH reaches a person's own record, which TRACKED_AS
@@ -64,9 +68,10 @@
 
 - name: ChaserUnchasedOverdue
   description: >-
-    Invoices more than 14 days past due, unpaid, on an account nobody is chasing: no follow-up is
-    scheduled on the company in the CRM. One row per invoice, most owed first. THE answer for
-    "which overdue invoices is nobody chasing" and the violations of Chaser's first duty.
+    Invoices over 14 days overdue that nobody is chasing. Invoices more than 14 days past due,
+    unpaid, on an account nobody is chasing: no follow-up is scheduled on the company in the CRM.
+    One row per invoice, most owed first. THE answer for "which overdue invoices is nobody chasing"
+    and the violations of Chaser's first duty.
   # Overdue by BILLING's own due date. On a book loaded into a billing system that cannot backdate
   # an invoice (Lago cannot), that date is the load date plus the payment terms, so a freshly loaded
   # book has nothing 14 days overdue yet, and this view says so by answering empty.
@@ -88,9 +93,10 @@
 
 - name: ChaserWonWithoutSubscription
   description: >-
-    Accounts with a deal won in the CRM and no active subscription in billing: sold, and not
-    being billed. One row per account, with the won deals by name. THE answer for "which won
-    deals are not billing" and the violations of Chaser's second duty.
+    Accounts with a won deal and no active subscription. Accounts with a deal won in the CRM and no
+    active subscription in billing: sold, and not being billed. One row per account and currency,
+    with the won deals by name and wonValue (their amounts summed in major units of `currency`). THE
+    answer for "which won deals are not billing" and the violations of Chaser's second duty.
   cypher: |
     MATCH (s:BillingSubscription)
     WHERE s.status = 'active'
@@ -102,15 +108,15 @@
     MATCH (k:CrmAccount)
     MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o)
     WHERE NOT a.accountKey IN billing
-    RETURN a.accountKey AS accountKey, a.name AS account, collect(o.title) AS wonDeals,
-           sum(o.amount) AS wonValue
+    RETURN a.accountKey AS accountKey, a.name AS account, o.currency AS currency,
+           collect(o.title) AS wonDeals, sum(o.amount) AS wonValue
     ORDER BY wonValue DESC
 
 - name: ChaserFailedPayments
   description: >-
-    Every invoice billing tried to collect and could not, with its account. One row per invoice.
-    THE answer for "which payments failed". Watch this view to fire Chaser's routine when a
-    payment newly fails.
+    Every invoice whose payment failed, with its account. Every invoice billing tried to collect and
+    could not, with its account. One row per invoice. THE answer for "which payments failed". Watch
+    this view to fire Chaser's routine when a payment newly fails.
   # The routine's trigger, not a duty: a failed payment is an EVENT to react to the day it
   # happens, where an unchased overdue invoice is a CONDITION to keep false. A watch on this view
   # turns a new row into `view.ChaserFailedPayments.changed`, which the routine listens for.

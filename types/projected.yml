@@ -16,11 +16,11 @@
 - name: Attendee
   projected: true
   description: >-
-    Someone from the customer's side who wrote to us or was in the meeting: a person at the
+    One person from the customer's side who wrote to us or was in the meeting: a person at the
     customer, never someone on our own staff.
   properties:
     name: "Full name, as written."
-    role: "Job title, as stated. Empty when the text does not say."
+    role: "Their job title as the text states it, free text and not a fixed list ('Head of Finance', 'IT Director'). Empty when the text does not say."
     email: "Their email address, when the text shows one."
   relationships:
     RAISED: { to: CustomerIssue, many: true, description: "Problems this person raised, including ones they pass on for a colleague (\"Tom in IT says…\")." }
