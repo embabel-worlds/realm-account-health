@@ -105,6 +105,19 @@ for r in V["HealthSellingIntoTrouble"]:
 for r in V["HealthOwingAndWaiting"]:
     check("owed by %s, both ways" % r["accountKey"], owed[r["accountKey"]]["owed"], r["owed"])
 
+print("== L2a: one account is asked of the helpdesk alone, and agrees with the book ==")
+# The busiest open account and its resolved figure, from the book-wide views; then the same account
+# through HealthCasesForAccount, which must not need the book to say so.
+if cases:
+    top = sorted(cases.values(), key=lambda r: (-r["openCases"], r["accountKey"]))[0]["accountKey"]
+    one = post("/api/v1/views/HealthCasesForAccount/invoke", {"args": {"accountKey": top, "status": "open"}}).get("data") or []
+    check("one account's open cases, %s" % top, cases[top]["openCases"], len(one))
+    check("  ...and the same case ids", sorted(cases[top]["caseIds"]), sorted(r["caseId"] for r in one))
+    resolved = {r["accountKey"]: r for r in V["HealthResolvedCasesByAccount"]}
+    if top in resolved:
+        one = post("/api/v1/views/HealthCasesForAccount/invoke", {"args": {"accountKey": top, "status": "resolved"}}).get("data") or []
+        check("one account's resolved cases, %s" % top, resolved[top]["resolvedCases"], len(one))
+
 print("== L2b: the RULES conclude what the facts say ==")
 # Each clause of rules/at-risk.yml, recomputed here from the fact views. A rule set is only as
 # good as the facts it was given, and its `requires:` demands are what give it them: a clause
