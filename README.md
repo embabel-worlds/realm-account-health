@@ -43,8 +43,8 @@ what the next read here sees.
 |---|---|---|
 | **Facts** | `views/health.yml` | Per-account facts, each reading ONE system; conjunctions that are one honest query; `HealthKnownAccounts`, which reads every system in full so every company is an account; and the `…ForAccount` views (`HealthCasesForAccount`, `HealthReceivablesForAccount`, `HealthPipelineForAccount`, `HealthRecurringForAccount`), ONE account's facts, asked of each system for that account alone rather than read off the whole book; `HealthFindAccount`, a name to a domain, exactly. |
 | **Models judge** | `views/judgement.yml` | `HealthCaseTriage` — how much each open case hurts the customer, and their mood, from their own words. `HealthCrmAwareness` — does anything sales wrote touch the topic. Materialised, 6h. |
-| **Rules conclude** | `rules/` | `AtRiskAccount` — one definition, seven independent clauses across three systems, each recording its own reason. `SHARES_ISSUE` — two accounts with an open case in the same product area, concluded for one account at a time. `POSSIBLY_WITHHELD_OVER` — an unpaid invoice and a case raised before it fell due. Computed when asked; nothing stored. |
-| **Views project** | `views/conclusions.yml` | The small view per rule set that carries its conclusion to every surface, and is what makes the rules run. `HealthSharedIssues` is by product AREA and needs no rule; `HealthSharedIssuesForAccount` reads `SHARES_ISSUE` for one account. |
+| **Rules conclude** | `rules/` | `AtRiskAccount` — one definition, seven independent clauses across three systems, each recording its own reason. `SHARES_ISSUE` — two accounts with an open case in the same product area; quadratic over a book, so no view reads it (see below). `POSSIBLY_WITHHELD_OVER` — an unpaid invoice and a case raised before it fell due. Computed when asked; nothing stored. |
+| **Views project** | `views/conclusions.yml` | The small view per rule set that carries its conclusion to every surface, and is what makes the rules run. `HealthSharedIssues` (by product AREA) and `HealthSharedIssuesForAccount` are direct queries and need no rule. |
 
 Why a rule set and not a view for `AtRiskAccount`: as a view it is a seven-way `OR` that cannot
 say which arm was true for an account and that nobody can extend. As rules, each clause is
@@ -87,8 +87,10 @@ Pairs grow with the square of the accounts in an area: on the scale book (eight 
 on one account in three) 2,000 accounts is ~27,000 pairs against the rule set's `maxPairs` of 5,000,
 and 5,000 accounts ~170,000, past the engine's 50,000-fact budget. A relationship set past either
 is refused whole, so the view failed by name and the battery's L1 stopped there. It now answers by
-AREA — one desk sweep, one row per area, with every account affected — and the rule set takes an
-`accountKey`, which `HealthSharedIssuesForAccount` passes, so the pairs are concluded for one account.
+AREA — one desk sweep, one row per area, with every account affected. One account's sharers are
+`HealthSharedIssuesForAccount`, a direct query over the same sweep: anchoring the rule set from a view
+does not work yet, because a view's arguments are substituted as literals and never reach a rule
+set's params (embabel/me#4177).
 
 ## Two colleagues: Steward and Chaser
 

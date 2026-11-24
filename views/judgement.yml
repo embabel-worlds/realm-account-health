@@ -19,13 +19,14 @@
 
 - name: HealthCaseTriage
   description: >-
-    Every open support case, judged from everything the customer has written on it: IMPACT on
-    their business (blocked, degraded, inconvenienced, or merely asking for something), read
-    across the whole thread with the latest words weighing most, and their MOOD toward us
-    (frustrated, neutral, positive), read from their most recent messages. THE answer for "which customers are really hurting", "which
-    support cases are serious", "who is frustrated with us" and "which open cases matter" — a
-    42-reply thread about dark mode is not trouble, and a 7-reply thread from a blocked customer
-    is. Cases with no message from the customer are absent: there is nothing to judge.
+    How much each open case hurts the customer, and their mood, judged. Every open support case,
+    judged from everything the customer has written on it: IMPACT on their business (blocked,
+    degraded, inconvenienced, or merely asking for something), read across the whole thread with the
+    latest words weighing most, and their MOOD toward us (frustrated, neutral, positive), read from
+    their most recent messages. THE answer for "which customers are really hurting", "which support
+    cases are serious", "who is frustrated with us" and "which open cases matter" — a 42-reply
+    thread about dark mode is not trouble, and a 7-reply thread from a blocked customer is. Cases
+    with no message from the customer are absent: there is nothing to judge.
   # No outputLabel, deliberately: on a MATERIALISED view an outputLabel means "cache member
   # nodes", and a tabular body under it caches nothing and answers EMPTY. Without one the rows
   # themselves are snapshotted, which is what a table of judgements is.
@@ -115,11 +116,12 @@
 
 - name: HealthCrmAwareness
   description: >-
-    For every account with an open support case that the CRM tracks: does ANYTHING sales has
-    written — on the company, its deals or its people — touch the topic of what support is
-    dealing with? `aware` or `unaware`, judged by a model from the notes and the case subjects.
-    THE answer for "does sales know about this customer's problem", "which open cases are not
-    reflected in the CRM" and "where is sales blind". One opinion: check it against the notes.
+    Whether sales knows about each account's open support problem. For every account with an open
+    support case that the CRM tracks: does ANYTHING sales has written — on the company, its deals or
+    its people — touch the topic of what support is dealing with? `aware` or `unaware`, judged by a
+    model from the notes and the case subjects. THE answer for "does sales know about this
+    customer's problem", "which open cases are not reflected in the CRM" and "where is sales blind".
+    One opinion: check it against the notes.
   # No outputLabel, deliberately: on a MATERIALISED view an outputLabel means "cache member
   # nodes", and a tabular body under it caches nothing and answers EMPTY. Without one the rows
   # themselves are snapshotted, which is what a table of judgements is.

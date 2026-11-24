@@ -4,14 +4,14 @@
 
 - name: HealthAtRiskAccounts
   description: >-
-    The accounts that are AT RISK, and every reason why, one column per reason (null when it does
-    not apply): unpaidWhileWaiting (unpaid invoices while a case is open), openDealsWhileWaiting
-    (open deals while a case is open), failedPayments, renewsOn (a renewal inside 120 days with a
-    case open), longestThread (15+ replies on an open case), highPriorityCases (urgent or high) and
-    billedButUnknownToCrm. Most reasons first. THE answer for "which accounts are at risk", "which
-    customers are in trouble", "why is <customer> at risk" and "who needs attention". The reasons
-    are counts and dates, never money: for amounts, per currency, read HealthReceivablesByAccount
-    and HealthPipelineByAccount.
+    Which accounts are at risk, and every reason why. The accounts that are AT RISK, and every
+    reason why, one column per reason (null when it does not apply): unpaidWhileWaiting (unpaid
+    invoices while a case is open), openDealsWhileWaiting (open deals while a case is open),
+    failedPayments, renewsOn (a renewal inside 120 days with a case open), longestThread (15+
+    replies on an open case), highPriorityCases (urgent or high) and billedButUnknownToCrm. Most
+    reasons first. THE answer for "which accounts are at risk", "which customers are in trouble",
+    "why is <customer> at risk" and "who needs attention". The reasons are counts and dates, never
+    money: for amounts, per currency, read HealthReceivablesByAccount and HealthPipelineByAccount.
   outputLabel: AtRiskAccountRow
   params:
     account:
@@ -43,11 +43,11 @@
 # account's areas is HealthSharedIssuesForAccount, which anchors the rule set on that account.
 - name: HealthSharedIssues
   description: >-
-    Product areas where TWO OR MORE accounts have an open support case: the area (the helpdesk's
-    own area-* tag), accounts affected, openCases in it, and accountKeys, the domains of every
-    account affected. Most accounts first. THE answer for "is this one unhappy customer or an
-    incident", "which customers have the same problem" and "what else is affected by <area>". For
-    the accounts sharing ONE account's areas, HealthSharedIssuesForAccount.
+    Product areas where two or more accounts have an open case. Each row: the area (the helpdesk's own area-* tag), accounts affected,
+    openCases in it, and accountKeys, the domains of every account affected. Most accounts first.
+    THE answer for "is this one unhappy customer or an incident", "which customers have the same
+    problem" and "what else is affected by <area>". For the accounts sharing ONE account's areas,
+    HealthSharedIssuesForAccount.
   outputLabel: SharedIssueAreaRow
   cypher: |
     MATCH (c:SupportCase)
@@ -63,33 +63,47 @@
 
 - name: HealthSharedIssuesForAccount
   description: >-
-    The other accounts with an open support case in the same product area as ONE account's open
-    cases: otherKey, otherAccount, shared (how many areas in common) and areas. Most in common
-    first. THE answer for "does anyone else have <customer>'s problem". Reads the derived
-    SHARES_ISSUE edge, concluded for this account alone. `accountKey` is the domain, exactly
-    ('acme.com').
+    Other accounts with an open case in one account's product areas. For each: otherKey, otherAccount, shared (areas in common)
+    and areas, most in common first. THE answer for "does anyone else have <customer>'s problem".
+    Only open cases and only the helpdesk's area-* tags count; the account itself is not listed.
+    `accountKey` is the domain, exactly ('acme.com').
   params:
     accountKey:
       type: string
-      description: "The account's domain, exactly as accountKey holds it: lower case, no scheme or www ('acme.com')."
+      required: true
+      description: "Required. The account's domain, exactly as accountKey holds it: lower case, no scheme or www ('acme.com')."
   outputLabel: AccountSharedIssueRow
-  # `$accountKey` reaches the rule set too: it declares a param of the same name, and a query's params
-  # are laid over a rule set's defaults, so SHARES_ISSUE is concluded from this account outward —
-  # its pairs are at most the accounts with an open case, never every pair on the book.
+  # A DIRECT QUERY, NOT THE RULE. It read SHARES_ISSUE, with the account passed to the rule set as a
+  # param of the same name, and failed TOO_EXPENSIVE live: a view's arguments are substituted into
+  # its Cypher as literals, so a rule set the view reads never receives them and concludes every pair
+  # on the book (embabel/me#4177). One account's sharers need no pairs: the areas of the open cases,
+  # each with the domains in it, kept where this account is one of them — one desk sweep, one row
+  # per area before the regrouping by the other account.
   cypher: |
-    MATCH (a:CustomerAccount {accountKey: $accountKey})-[s:SHARES_ISSUE]->(b:CustomerAccount)
-    RETURN a.accountKey AS accountKey, a.name AS account, b.accountKey AS otherKey,
-           b.name AS otherAccount, s.shared AS shared, s.areas AS areas
+    MATCH (c:SupportCase)
+    WHERE c.status = 'open'
+    UNWIND c.tags AS area
+    WITH c.accountKey AS domain, area
+    WHERE area STARTS WITH 'area-'
+    WITH area, collect(DISTINCT domain) AS domains
+    WHERE $accountKey IN domains
+    UNWIND domains AS other
+    WITH other, area
+    WHERE other <> $accountKey
+    WITH other, collect(area) AS areas
+    MATCH (b:CustomerAccount {accountKey: other})
+    RETURN $accountKey AS accountKey, b.accountKey AS otherKey, b.name AS otherAccount,
+           size(areas) AS shared, areas
     ORDER BY shared DESC, otherAccount
 
 - name: HealthPossiblyWithheld
   description: >-
-    Unpaid invoices on accounts that raised a still-open support case BEFORE the invoice fell
-    due — money collections should not chase without knowing about the problem. One row per
-    invoice and case; owed is in major units of `currency`. THE answer for
-    "are any customers withholding payment over a problem" and "which unpaid invoices are tied
-    to a support case". It shows the two facts and their order; it does not claim the customer
-    said so.
+    Unpaid invoices on accounts whose open case predates the due date. Unpaid invoices on accounts
+    that raised a still-open support case BEFORE the invoice fell due — money collections should not
+    chase without knowing about the problem. One row per invoice and case; owed is in major units of
+    `currency`. THE answer for "are any customers withholding payment over a problem" and "which
+    unpaid invoices are tied to a support case". It shows the two facts and their order; it does not
+    claim the customer said so.
   outputLabel: PossiblyWithheldRow
   cypher: |
     MATCH (i:BillingInvoice)-[w:POSSIBLY_WITHHELD_OVER]->(c:SupportCase)

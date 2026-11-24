@@ -1,8 +1,8 @@
 name: account-health
 description: >-
-  Which customers are in trouble, which are ready for more, and what the CRM does not know
-  about them — read across a CRM, a helpdesk and a billing system through the business
-  vocabulary (realm-business-vocabulary), naming no product. Every view, rule and judgement is
+  Which customers are in trouble or ready for more, across a CRM, a helpdesk and billing. It
+  reads all three through the business vocabulary (realm-business-vocabulary), naming no
+  product, and says what the CRM does not know about them. Every view, rule and judgement is
   written against the vocabulary's types, edges and properties and joins on the CustomerAccount
   spine, so the same answers come from whichever CRM, helpdesk and billing system the world has.
   Nothing is stored: each answer is read from the three systems when it is asked for.
