@@ -41,7 +41,7 @@ what the next read here sees.
 
 | | Where | What |
 |---|---|---|
-| **Facts** | `views/health.yml` | Per-account facts, each reading ONE system; conjunctions that are one honest query; `HealthKnownAccounts`, which reads every system in full so every company is an account. |
+| **Facts** | `views/health.yml` | Per-account facts, each reading ONE system; conjunctions that are one honest query; `HealthKnownAccounts`, which reads every system in full so every company is an account; `HealthCasesForAccount`, ONE account's cases, asked of the helpdesk for that account alone rather than read off the whole book. |
 | **Models judge** | `views/judgement.yml` | `HealthCaseTriage` — how much each open case hurts the customer, and their mood, from their own words. `HealthCrmAwareness` — does anything sales wrote touch the topic. Materialised, 6h. |
 | **Rules conclude** | `rules/` | `AtRiskAccount` — one definition, seven independent clauses across three systems, each recording its own reason. `SHARES_ISSUE` — two accounts with an open case in the same product area. `POSSIBLY_WITHHELD_OVER` — an unpaid invoice and a case raised before it fell due. Computed when asked; nothing stored. |
 | **Views project** | `views/conclusions.yml` | The small view per rule set that carries its conclusion to every surface, and is what makes the rules run. |

@@ -110,7 +110,8 @@
   description: >-
     Per account: WHAT the open support cases are about — their subjects, ids and links, alongside
     the same counts. The detail behind HealthOpenCaseCountsByAccount, for every account with an
-    open case; it takes no parameters. To ask about one account, filter its rows by accountKey.
+    open case; it reads every open case on the desk. For ONE account ask HealthCasesForAccount,
+    which asks the helpdesk about that account alone.
   outputLabel: AccountOpenCasesRow
   cypher: |
     MATCH (c:SupportCase)
@@ -126,8 +127,9 @@
 - name: HealthResolvedCasesByAccount
   description: >-
     Per account: the support cases that have been RESOLVED — how many, when the latest was
-    closed, and what they were about. THE answer for "what have we fixed for <customer>" and
-    "who have we recently helped".
+    closed, and what they were about, across every account. THE answer for "who have we recently
+    helped". For ONE customer ("what have we fixed for <customer>") ask HealthCasesForAccount with
+    status resolved, which asks the helpdesk about that account alone.
   outputLabel: AccountResolvedCasesRow
   cypher: |
     MATCH (c:SupportCase)
@@ -137,6 +139,41 @@
     RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS resolvedCases,
            max(c.closedOn) AS lastResolved, collect(c.subject) AS subjects
     ORDER BY lastResolved DESC
+
+# ONE account, asked of the helpdesk for that account alone. The per-account views above read the
+# whole book, which is right for a question about the whole book; filtering their rows to answer about
+# one company reads every case on the desk to keep a handful. A case carries the vocabulary's
+# `accountKey`, so pinning it names no product and lets the helpdesk's realm fetch that company alone
+# (realm-chatwoot: one call per 25 of its cases, where the sweep is one per 25 on the whole desk).
+#
+# The pin is written on the case, as a plain equality on the parameter, and that is load-bearing: it
+# is what the engine reads as "this company only". The optional status is tested on a plain variable
+# after a WITH, so an empty parameter cannot be lifted into the fetch and filter out every row.
+- name: HealthCasesForAccount
+  description: >-
+    One account's support cases, open first and newest first: subject, status, priority, kind, who
+    raised it, when it was opened and closed, and a link. THE answer for "what has <customer>
+    raised with support", "how many open cases does <customer> have" and "what have we fixed for
+    <customer>". Asks the helpdesk about that account alone, not the whole book.
+  outputLabel: AccountCaseRow
+  params:
+    accountKey:
+      type: string
+      description: "The account's domain, exactly: lower case, no www, e.g. acme.com."
+    status:
+      type: string
+      default: ""
+      description: "Only this status, exactly: open, pending or resolved. Empty = every status."
+  cypher: |
+    MATCH (c:SupportCase)
+    WHERE c.accountKey = $accountKey
+    WITH c, c.status AS caseStatus
+    WHERE ($status = '' OR caseStatus = $status)
+    RETURN c.accountKey AS accountKey, c.id AS caseId, c.status AS status, c.subject AS subject,
+           c.priority AS priority, c.kind AS kind, c.requesterName AS requester,
+           c.requesterEmail AS requesterEmail, c.openedOn AS openedOn, c.closedOn AS closedOn,
+           c.replyCount AS replies, c.sourceUrl AS url
+    ORDER BY CASE c.status WHEN 'open' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, c.openedOn DESC, c.id DESC
 
 # Billing records carry no accountKey (the vocabulary leaves a billing system to reach the account by
 # BILLED_AS), so these sweep the billing customers AND the records, then join. The invoice and
