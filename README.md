@@ -41,15 +41,54 @@ what the next read here sees.
 
 | | Where | What |
 |---|---|---|
-| **Facts** | `views/health.yml` | Per-account facts, each reading ONE system; conjunctions that are one honest query; `HealthKnownAccounts`, which reads every system in full so every company is an account; `HealthCasesForAccount`, ONE account's cases, asked of the helpdesk for that account alone rather than read off the whole book. |
+| **Facts** | `views/health.yml` | Per-account facts, each reading ONE system; conjunctions that are one honest query; `HealthKnownAccounts`, which reads every system in full so every company is an account; and the `…ForAccount` views (`HealthCasesForAccount`, `HealthReceivablesForAccount`, `HealthPipelineForAccount`, `HealthRecurringForAccount`), ONE account's facts, asked of each system for that account alone rather than read off the whole book; `HealthFindAccount`, a name to a domain, exactly. |
 | **Models judge** | `views/judgement.yml` | `HealthCaseTriage` — how much each open case hurts the customer, and their mood, from their own words. `HealthCrmAwareness` — does anything sales wrote touch the topic. Materialised, 6h. |
-| **Rules conclude** | `rules/` | `AtRiskAccount` — one definition, seven independent clauses across three systems, each recording its own reason. `SHARES_ISSUE` — two accounts with an open case in the same product area. `POSSIBLY_WITHHELD_OVER` — an unpaid invoice and a case raised before it fell due. Computed when asked; nothing stored. |
-| **Views project** | `views/conclusions.yml` | The small view per rule set that carries its conclusion to every surface, and is what makes the rules run. |
+| **Rules conclude** | `rules/` | `AtRiskAccount` — one definition, seven independent clauses across three systems, each recording its own reason. `SHARES_ISSUE` — two accounts with an open case in the same product area, concluded for one account at a time. `POSSIBLY_WITHHELD_OVER` — an unpaid invoice and a case raised before it fell due. Computed when asked; nothing stored. |
+| **Views project** | `views/conclusions.yml` | The small view per rule set that carries its conclusion to every surface, and is what makes the rules run. `HealthSharedIssues` is by product AREA and needs no rule; `HealthSharedIssuesForAccount` reads `SHARES_ISSUE` for one account. |
 
 Why a rule set and not a view for `AtRiskAccount`: as a view it is a seven-way `OR` that cannot
 say which arm was true for an account and that nobody can extend. As rules, each clause is
 independent, the reasons are read off the account, and another realm — a project tracker — can add
 "work we promised them is stuck" as a clause **from its own package**.
+
+## What the figures mean
+
+- **One company, one account.** An account is keyed by its domain (`accountKey`). Near-named
+  companies are DISTINCT accounts — `Acme`, `Acme AB` and `Acme Group` each have their own domain —
+  so every `account` / `accountKey` parameter is a domain matched exactly, and `HealthFindAccount`
+  matches a name exactly unless asked for `partial`.
+- **Open** is status `open`: waiting on us. `pending` waits on the customer and is not counted —
+  by the views and the rules alike.
+- **Money is per currency.** Every view that sums money returns one row per account AND currency;
+  nothing is added across currencies. The at-risk reasons are counts, dates and flags, never
+  amounts, so they carry no currency; the amounts are in the fact views.
+- **High priority** is urgent OR high. `owed` is `amount - amountPaid`; unpaid is payment not
+  succeeded, which includes invoices not yet due. `openPipeline` is unweighted.
+
+## One account, or the whole book
+
+The book-wide views sweep each system once by its bare vocabulary label, which is right for "which
+accounts…". Asked about ONE company, a sweep would read every record in every system to keep a
+handful, so the `…ForAccount` views ask each system about that domain alone: a few source calls
+whatever the book's size (`tests/verify.sh` L2e asserts the bound).
+
+```sh
+curl -u "$AUTH" -X POST "$APPLIANCE/api/v1/views/HealthReceivablesForAccount/invoke" \
+  -H 'Content-Type: application/json' -d '{"args":{"accountKey":"acme.com"}}'
+```
+
+`HealthAtRiskAccounts {account}` is the exception, stated: the rule set's facts are demanded book-wide
+whatever its argument, so `account` filters the conclusion and does not make it cheaper.
+
+## Shared issues: by area, because pairs are quadratic
+
+`HealthSharedIssues` used to list every PAIR of accounts sharing a product area, from `SHARES_ISSUE`.
+Pairs grow with the square of the accounts in an area: on the scale book (eight areas, an open case
+on one account in three) 2,000 accounts is ~27,000 pairs against the rule set's `maxPairs` of 5,000,
+and 5,000 accounts ~170,000, past the engine's 50,000-fact budget. A relationship set past either
+is refused whole, so the view failed by name and the battery's L1 stopped there. It now answers by
+AREA — one desk sweep, one row per area, with every account affected — and the rule set takes an
+`accountKey`, which `HealthSharedIssuesForAccount` passes, so the pairs are concluded for one account.
 
 ## Two colleagues: Steward and Chaser
 
@@ -138,7 +177,9 @@ name no product.
 
 ## Verify
 
-`AUTH=user:pass sh tests/verify.sh` — every view by name; the views against each other; **every
+`AUTH=user:pass sh tests/verify.sh` — every view by name; the views against each other, per
+currency; one account through the `…ForAccount` views, agreeing with the book in a bounded number
+of source calls (`ONE_ACCOUNT_CALLS`, default 6); **every
 rule clause recomputed from the facts**; the judgements stable across reads and within their
 vocabularies; the app served; and `tests/questions.yml` replayed through the ask surface,
 including three questions the sources cannot answer, asked three times each.

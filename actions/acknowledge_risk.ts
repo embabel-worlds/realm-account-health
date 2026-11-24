@@ -57,8 +57,8 @@ if (!company) {
 
 const reasons = [
   v.failedPayments ? `${v.failedPayments} failed payment(s)` : '',
-  v.owingWhileCaseOpen ? `owes ${v.owingWhileCaseOpen} while a case is open` : '',
-  v.pipelineIntoTrouble ? `${v.pipelineIntoTrouble} of pipeline into an open case` : '',
+  v.unpaidWhileWaiting ? `${v.unpaidWhileWaiting} unpaid invoice(s) while a case is open` : '',
+  v.openDealsWhileWaiting ? `${v.openDealsWhileWaiting} open deal(s) while a case is open` : '',
   v.highPriorityCases ? `${v.highPriorityCases} high-priority case(s) open` : '',
   v.renewsOn ? `renews ${String(v.renewsOn).slice(0, 10)} with a case open` : '',
   v.unknownToCrm ? 'billed but unknown to the CRM' : '',

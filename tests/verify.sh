@@ -9,6 +9,9 @@
 #   L2  the views agree with EACH OTHER — a conjunction view must equal the same conjunction
 #       composed from the fact views, which is exactly how the app builds its signals
 #   L2d the agents' duty views agree with the facts they are built from
+#   L2e ONE account is asked of each system for that account alone: the …ForAccount views agree
+#       with the book-wide views AND each makes a bounded number of source calls (ONE_ACCOUNT_CALLS,
+#       default 6), where a sweep of the book makes one per page of every system
 #   L3  the app is served
 #   L4  the battery: questions in words reach the same figures, and the unanswerable stay so
 #   L5  text in: an email projected with ai.fromText resolves to the right account, reports the
@@ -32,10 +35,14 @@ def post(path, body):
     out = subprocess.run(["curl", "-s", "-K", auth, "-X", "POST", base + path, "-H", "Content-Type: application/json",
                           "-d", json.dumps(body)], capture_output=True, text=True).stdout
     return json.loads(out, strict=False)
-def view(name):
-    v = post("/api/v1/views/%s/invoke" % name, {"args": {}})
-    if v.get("status") != "SUCCEEDED": raise SystemExit("view %s: %s" % (name, v.get("status")))
-    return v.get("data") or []
+def invoke(name, args=None):
+    v = post("/api/v1/views/%s/invoke" % name, {"args": args or {}})
+    if v.get("status") != "SUCCEEDED":
+        # The envelope's error says WHY (TOO_EXPENSIVE, BUDGET_EXCEEDED, a fetch cap): a bare FAILED
+        # sent the last reader of this battery to the server log to find out.
+        raise SystemExit("view %s %s: %s %s" % (name, args or "", v.get("status"), json.dumps(v.get("error"))))
+    return v
+def view(name, args=None): return invoke(name, args).get("data") or []
 def check(name, want, got):
     global fail
     ok = want == got
@@ -96,14 +103,30 @@ pipe = {r["accountKey"]: r for r in V["HealthPipelineByAccount"]}
 recur = {r["accountKey"]: r for r in V["HealthRecurringByAccount"]}
 billed = {r["accountKey"] for r in V["HealthBillingByAccount"]}
 crm = {r["accountKey"] for r in V["HealthCrmRecordByAccount"]}
-check("owing AND waiting", sorted(set(cases) & set(owed)), keys(V["HealthOwingAndWaiting"]))
-check("selling into trouble", sorted(k for k in cases if pipe.get(k, {}).get("openPipeline", 0) > 0), keys(V["HealthSellingIntoTrouble"]))
-check("revenue behind cases", sorted(set(cases) & set(recur)), keys(V["HealthRevenueBehindCases"]))
+# Money views answer one row per account AND currency, so a figure is compared per (account, currency).
+owed_cur = {(r["accountKey"], r["currency"]): r for r in V["HealthReceivablesByAccount"]}
+pipe_cur = {(r["accountKey"], r["currency"]): r for r in V["HealthPipelineByAccount"]}
+recur_cur = {(r["accountKey"], r["currency"]): r for r in V["HealthRecurringByAccount"]}
+def per_account(rows, col):
+    out = {}
+    for r in rows: out[r["accountKey"]] = out.get(r["accountKey"], 0) + (r.get(col) or 0)
+    return out
+open_pipe = per_account(V["HealthPipelineByAccount"], "openPipeline")
+def ukeys(rows): return sorted(set(r["accountKey"] for r in rows))
+check("no money view sums across currencies: one row per (account, currency)", True,
+      all(len({(r["accountKey"], r["currency"]) for r in V[n]}) == len(V[n])
+          for n in ("HealthReceivablesByAccount", "HealthRecurringByAccount", "HealthPipelineByAccount",
+                    "HealthOwingAndWaiting", "HealthRevenueBehindCases", "HealthSellingIntoTrouble")))
+check("owing AND waiting", sorted(set(cases) & set(owed)), ukeys(V["HealthOwingAndWaiting"]))
+check("selling into trouble", sorted(k for k in cases if open_pipe.get(k, 0) > 0), ukeys(V["HealthSellingIntoTrouble"]))
+check("revenue behind cases", sorted(set(cases) & set(recur)), ukeys(V["HealthRevenueBehindCases"]))
 check("billed, unknown to the CRM", sorted(billed - crm), keys(V["HealthBilledButUnknownToCrm"]))
 for r in V["HealthSellingIntoTrouble"]:
-    check("pipeline for %s, both ways" % r["accountKey"], pipe[r["accountKey"]]["openPipeline"], r["openPipeline"])
+    check("pipeline for %s in %s, both ways" % (r["accountKey"], r["currency"]),
+          pipe_cur[(r["accountKey"], r["currency"])]["openPipeline"], r["openPipeline"])
 for r in V["HealthOwingAndWaiting"]:
-    check("owed by %s, both ways" % r["accountKey"], owed[r["accountKey"]]["owed"], r["owed"])
+    check("owed by %s in %s, both ways" % (r["accountKey"], r["currency"]),
+          owed_cur[(r["accountKey"], r["currency"])]["owed"], r["owed"])
 
 print("== L2a: one account is asked of the helpdesk alone, and agrees with the book ==")
 # The busiest open account and its resolved figure, from the book-wide views; then the same account
@@ -124,23 +147,29 @@ print("== L2b: the RULES conclude what the facts say ==")
 # that silently concluded over an unfetched system would be short here.
 risk = {r["accountKey"]: r for r in V["HealthAtRiskAccounts"]}
 def having(col): return sorted(k for k, r in risk.items() if r.get(col) is not None)
-check("rule: owing and waiting", sorted(set(cases) & set(owed)), having("owingAndWaiting"))
-check("rule: selling into trouble", sorted(k for k in cases if pipe.get(k, {}).get("openPipeline", 0) > 0), having("sellingIntoTrouble"))
-check("rule: failed payments", sorted(k for k, r in owed.items() if r["failedInvoices"] > 0), having("failedPayments"))
-check("rule: billed with no owner", sorted(billed - crm), having("billedWithNoOwner"))
+check("rule: unpaid while waiting", sorted(set(cases) & set(owed)), having("unpaidWhileWaiting"))
+check("rule: open deals while waiting", sorted(k for k in cases if open_pipe.get(k, 0) > 0), having("openDealsWhileWaiting"))
+failed_by = per_account(V["HealthReceivablesByAccount"], "failedInvoices")
+check("rule: failed payments", sorted(k for k, n in failed_by.items() if n > 0), having("failedPayments"))
+check("rule: billed but unknown to the CRM", sorted(billed - crm), having("billedButUnknownToCrm"))
 check("rule: high-priority cases", sorted(k for k, r in cases.items() if r["highPriority"] > 0), having("highPriorityCases"))
 check("rule: long threads (>= 15 replies)", sorted(k for k, r in cases.items() if (r["longestThread"] or 0) >= 15), having("longestThread"))
+unpaid_by = per_account(V["HealthReceivablesByAccount"], "unpaidInvoices")
+deals_by = per_account(V["HealthPipelineByAccount"], "openDeals")
 for r in V["HealthAtRiskAccounts"]:
-    if r.get("sellingIntoTrouble") is not None:
-        check("rule value: pipeline for %s" % r["accountKey"], pipe[r["accountKey"]]["openPipeline"], r["sellingIntoTrouble"])
-# A derived edge is between two DIFFERENT accounts that both have an open case, once per pair.
-pairs = [(r["accountKey"], r["otherKey"]) for r in V["HealthSharedIssues"]]
-check("shared issue: both ends have an open case", True, all(a in cases and b in cases for a, b in pairs))
-check("shared issue: each pair once, never an account with itself", True, len(set(pairs)) == len(pairs) and all(a < b for a, b in pairs))
+    if r.get("unpaidWhileWaiting") is not None:
+        check("rule value: unpaid invoices for %s" % r["accountKey"], unpaid_by[r["accountKey"]], r["unpaidWhileWaiting"])
+    if r.get("openDealsWhileWaiting") is not None:
+        check("rule value: open deals for %s" % r["accountKey"], deals_by[r["accountKey"]], r["openDealsWhileWaiting"])
+# Shared issues are by AREA: every account named has an open case, every area is shared by two or more.
+areas = V["HealthSharedIssues"]
+check("shared issue: every account in an area has an open case", True, all(k in cases for r in areas for k in r["accountKeys"]))
+check("shared issue: every area is shared, and counted right", True,
+      all(r["accounts"] == len(set(r["accountKeys"])) >= 2 and r["openCases"] >= r["accounts"] for r in areas))
 check("possibly withheld: only accounts that owe AND wait", True, set(r["accountKey"] for r in V["HealthPossiblyWithheld"]) <= (set(cases) & set(owed)))
 
 print("== L2d: the agents' duties agree with the facts ==")
-check("failed payments = the failed invoices on the receivables", sorted(k for k, r in owed.items() for _ in range(r["failedInvoices"])),
+check("failed payments = the failed invoices on the receivables", sorted(k for k, n in failed_by.items() for _ in range(n)),
       sorted(r["accountKey"] for r in V["ChaserFailedPayments"]))
 check("unacknowledged risk is a subset of the accounts at risk", True,
       {r["accountKey"] for r in V["StewardUnacknowledgedRisk"]} <= set(risk))
@@ -152,6 +181,42 @@ counts = {r["accountKey"]: r["openCases"] for r in V["HealthOpenCaseCountsByAcco
 check("open-case counts = the detail view's counts", {k: r["openCases"] for k, r in cases.items()}, counts)
 check("high-priority counts = the detail view's high priority", {k: r["highPriority"] for k, r in cases.items() if r["highPriority"]},
       {r["accountKey"]: r["highPriorityCases"] for r in V["HealthHighPriorityCaseCountsByAccount"]})
+
+print("== L2e: one account, asked of each system alone, in a bounded number of calls ==")
+# The busiest account that is billed and in the CRM, so every system has something to say about it.
+LIMIT = int(os.environ.get("ONE_ACCOUNT_CALLS", "6"))
+both = [k for k in cases if k in owed and k in pipe] or list(cases)
+if both:
+    top = sorted(both, key=lambda k: (-cases[k]["openCases"], k))[0]
+    def bounded(name, args):
+        env = invoke(name, args)
+        calls = (env.get("metrics") or {}).get("externalCalls")
+        check("%s(%s) source calls <= %d" % (name, top, LIMIT), True, calls is not None and calls <= LIMIT)
+        if calls is not None: print("       %s made %d source call(s)" % (name, calls))
+        return env.get("data") or []
+    one = bounded("HealthCasesForAccount", {"accountKey": top, "status": "open"})
+    check("  cases for %s = the book's open cases" % top, cases[top]["openCases"], len(one))
+    one = bounded("HealthReceivablesForAccount", {"accountKey": top})
+    for cur in sorted({r["currency"] for r in one} | {c for (k, c) in owed_cur if k == top}):
+        check("  owed by %s in %s = the book's" % (top, cur), round(owed_cur.get((top, cur), {}).get("owed", 0), 2),
+              round(sum(r["owed"] for r in one if r["currency"] == cur), 2))
+    one = bounded("HealthPipelineForAccount", {"accountKey": top})
+    for cur in sorted({r["currency"] for r in one if r["status"] == "open"} | {c for (k, c) in pipe_cur if k == top}):
+        check("  open pipeline of %s in %s = the book's" % (top, cur), round(pipe_cur.get((top, cur), {}).get("openPipeline", 0), 2),
+              round(sum(r["amount"] or 0 for r in one if r["status"] == "open" and r["currency"] == cur), 2))
+    one = bounded("HealthRecurringForAccount", {"accountKey": top})
+    for cur in sorted({r["currency"] for r in one} | {c for (k, c) in recur_cur if k == top}):
+        check("  per period of %s in %s = the book's" % (top, cur), round(recur_cur.get((top, cur), {}).get("perPeriod", 0), 2),
+              round(sum(r["amount"] or 0 for r in one if r["currency"] == cur), 2))
+    # The anchored rule set: the accounts sharing an area with this one are exactly those the
+    # area view lists beside it. Not call-bounded: "who else" needs the whole desk.
+    others = sorted(r["otherKey"] for r in view("HealthSharedIssuesForAccount", {"accountKey": top}))
+    want = sorted({k for r in areas if top in r["accountKeys"] for k in r["accountKeys"]} - {top})
+    check("  accounts sharing %s's areas = the area view's" % top, want, others)
+    # A name finds its own account and only it: exact by default.
+    name = cases[top]["account"]
+    found = view("HealthFindAccount", {"name": name})
+    check("  HealthFindAccount('%s') is exact" % name, True, top in [r["accountKey"] for r in found] and all(r["account"] == name for r in found))
 
 print("== L2c: the JUDGEMENTS are stable, and legal ==")
 # A materialised judgement must be the SAME judgement on the next read — that is what it is
@@ -219,12 +284,11 @@ Priya Raman, Head of Finance"""
     check("every issue resolved to %s" % KEY, [KEY] * len(rows), [r.get("accountKey") for r in rows])
     check("severities stay in the declared set", True, all(r.get("severity") in ("high", "medium", "low") for r in rows))
     open_by_key = {r["accountKey"]: r for r in V["HealthOpenCasesByAccount"]}
-    owed_by_key = {r["accountKey"]: r for r in V["HealthReceivablesByAccount"]}
     want_cases = sorted(set(open_by_key.get(KEY, {}).get("subjects") or []))
-    want_owed = round(float(owed_by_key[KEY]["owed"]), 2) if KEY in owed_by_key else 0.0
     for r in rows:
+        want_owed = round(float(owed_cur.get((KEY, r.get("currency")), {}).get("owed") or 0), 2)
         check("open cases beside '%s'" % r.get("issue"), want_cases, sorted(r.get("openCases") or []))
-        check("owed beside '%s'" % r.get("issue"), want_owed, round(float(r.get("owed") or 0), 2))
+        check("owed beside '%s' in %s" % (r.get("issue"), r.get("currency")), want_owed, round(float(r.get("owed") or 0), 2))
     # A personal address must come back DECLINED — said, not just an empty account column.
     gmail = view_with("HealthWhatThisEmailRaises", {"email": EMAIL.replace("priya.raman@northwind-traders.example", "priya.raman@gmail.com")})
     grows = gmail.get("data") or []

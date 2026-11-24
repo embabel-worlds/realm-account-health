@@ -19,7 +19,8 @@
 - name: StewardUnacknowledgedRisk
   description: >-
     Accounts at risk that nobody has picked up: no follow-up is scheduled on the company in the
-    CRM. One row per account, with every reason it is at risk. THE answer for "which at-risk
+    CRM. One row per account, with every reason it is at risk (counts, dates and flags; amounts are
+    in the fact views, per currency). THE answer for "which at-risk
     accounts has nobody acknowledged" and the violations of Steward's first duty. An at-risk
     account the CRM has never heard of is always here: it cannot be followed up where it is not.
   # Acknowledged means a FOLLOW-UP, not a note. A note says somebody knew; a scheduled activity
@@ -33,10 +34,10 @@
     MATCH (a:AtRiskAccount)
     WHERE NOT a.accountKey IN acknowledged
     RETURN a.accountKey AS accountKey, a.name AS account,
-           a.riskFailedPayments AS failedPayments, a.riskOwingAndWaiting AS owingWhileCaseOpen,
-           a.riskSellingIntoTrouble AS pipelineIntoTrouble, a.riskHighPriorityCases AS highPriorityCases,
+           a.riskFailedPayments AS failedPayments, a.riskUnpaidWhileWaiting AS unpaidWhileWaiting,
+           a.riskOpenDealsWhileWaiting AS openDealsWhileWaiting, a.riskHighPriorityCases AS highPriorityCases,
            a.riskLongestThread AS longestThread, a.riskRenewsOn AS renewsOn,
-           a.riskUnownedBilling AS unknownToCrm
+           a.riskBilledUnknownToCrm AS unknownToCrm
     ORDER BY account
 
 - name: StewardRenewalsWithoutCall
@@ -89,7 +90,8 @@
 - name: ChaserWonWithoutSubscription
   description: >-
     Accounts with a deal won in the CRM and no active subscription in billing: sold, and not
-    being billed. One row per account, with the won deals by name. THE answer for "which won
+    being billed. One row per account and currency, with the won deals by name and wonValue (their
+    amounts summed in major units of `currency`). THE answer for "which won
     deals are not billing" and the violations of Chaser's second duty.
   cypher: |
     MATCH (s:BillingSubscription)
@@ -102,8 +104,8 @@
     MATCH (k:CrmAccount)
     MATCH (a:CustomerAccount)-[:TRACKED_AS]->(k)-[:HAS_OPPORTUNITY]->(o)
     WHERE NOT a.accountKey IN billing
-    RETURN a.accountKey AS accountKey, a.name AS account, collect(o.title) AS wonDeals,
-           sum(o.amount) AS wonValue
+    RETURN a.accountKey AS accountKey, a.name AS account, o.currency AS currency,
+           collect(o.title) AS wonDeals, sum(o.amount) AS wonValue
     ORDER BY wonValue DESC
 
 - name: ChaserFailedPayments

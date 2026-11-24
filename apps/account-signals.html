@@ -224,7 +224,7 @@
   <p><b>First, who is an account.</b> A company becomes an account when one of the three systems' realms keys it, which happens when that system is read. So before anything else the page invokes <code>HealthKnownAccounts</code>, which reads the CRM's companies, the billing system's customers and the helpdesk's cases in full by their business-vocabulary names. Nothing on this page, and nothing in the realm's views, names a product: the same page answers whichever CRM, helpdesk and billing system the world has, so long as their realms speak the vocabulary.</p>
   <p>Then it invokes fifteen saved views from the <code>account-health</code> realm, all without parameters, and joins their rows by <code>accountKey</code> in the browser. Ten are plain facts:</p>
   <ul>
-    <li><code>HealthOpenCasesByAccount</code> — open and pending support cases per account: count, high priority, longest thread, oldest opened, subjects.</li>
+    <li><code>HealthOpenCasesByAccount</code> — open support cases per account (waiting on us; pending ones wait on the customer and are left out): count, high priority, longest thread, oldest opened, subjects.</li>
     <li><code>HealthResolvedCasesByAccount</code> — resolved cases per account and when the last was closed.</li>
     <li><code>HealthReceivablesByAccount</code> — unpaid invoices per account, how many failed collection, the amount owed.</li>
     <li><code>HealthBillingByAccount</code> — every invoice issued per account and how many were paid.</li>
@@ -238,7 +238,7 @@
     <li><code>HealthAtRiskAccounts</code> — reads the derived label <code>AtRiskAccount</code>. A <b>rule set</b> in the realm (<code>rules/at-risk.yml</code>) concludes which accounts are at risk, one independent clause per reason, each recording its own value. This page does not decide those reasons; it words them. They are computed when asked and stored nowhere, so an account leaves the label when its last reason stops being true.</li>
     <li><code>HealthCaseTriage</code> — a <b>model</b> reads everything the customer wrote on each open case and judges <i>impact</i> (blocked, degraded, inconvenienced, asking) across the thread and <i>mood</i> (frustrated, neutral, positive) from their latest messages. Kept for six hours, so it is as of its last run.</li>
     <li><code>HealthCrmAwareness</code> — a <b>model</b> reads every CRM note on an account beside its open cases and says whether sales is <i>aware</i> or <i>unaware</i> of the topic. Kept for six hours.</li>
-    <li><code>HealthSharedIssues</code> — reads the derived relationship <code>SHARES_ISSUE</code>: two accounts each have an open case in the same product area (the helpdesk's own <code>area-*</code> labels).</li>
+    <li><code>HealthSharedIssues</code> — product areas (the helpdesk's own <code>area-*</code> labels) where two or more accounts have an open case, with every account affected. Grouped by area because pairs of accounts grow with the square of the book; the pairs for one account are <code>HealthSharedIssuesForAccount</code>, which reads the derived relationship <code>SHARES_ISSUE</code>.</li>
     <li><code>HealthPossiblyWithheld</code> — reads the derived relationship <code>POSSIBLY_WITHHELD_OVER</code>: an unpaid invoice and a still-open case on one account, where the case was raised before the invoice fell due.</li>
   </ul>
   <p><b>The map.</b> The top 20 accounts of each inbox are dots — the whole book runs to thousands, and a dot per account packs to a few pixels with no room for a label, so the graphic showed texture rather than accounts. The inboxes below are not capped, and the legend says how many are in them. A dot's area is the money at stake, so a dot twice the size is twice the money. Red needs attention, amber is worth a look, green is good news. A pulsing dot is a customer the model judged to be blocked or degraded <i>and</i> frustrated. Positions mean nothing beyond the side they are on. Click a dot to open the account.</p>
@@ -431,10 +431,14 @@
         var a = by[row.accountKey] || (by[row.accountKey] = { accountKey: row.accountKey, name: row.account || row.accountKey });
         if (row.account) a.name = row.account;
         if (MANY[k]) (a[MANY[k]] || (a[MANY[k]] = [])).push(row); else a[k] = row;
-        if (k === 'shared' && row.otherKey) {
-          var b = by[row.otherKey] || (by[row.otherKey] = { accountKey: row.otherKey, name: row.otherAccount || row.otherKey });
-          (b.shared || (b.shared = [])).push(row);
-        }
+      });
+    });
+    /* Shared issues arrive by AREA, not by account: each row is one product area and the domains of
+       every account with an open case in it. Hang each area on each of its accounts. */
+    (facts.shared || []).forEach(function (row) {
+      list(row.accountKeys).forEach(function (key) {
+        var a = by[key] || (by[key] = { accountKey: key, name: key });
+        (a.shared || (a.shared = [])).push(row);
       });
     });
     var bad = [], good = [], slipped = [];
@@ -496,21 +500,21 @@
 
       /* THE RULE SET'S REASONS. Whether each applies is read off the derived AtRiskAccount, never
          recomputed here; this page only words them, from the facts. */
-      if (risk && risk.sellingIntoTrouble != null) {
+      if (risk && risk.openDealsWhileWaiting != null) {
         R.push(mild
           ? { id: 'selling', sev: 2, title: 'Open request while selling', src: ['crm', 'support'],
-              head: '<b>' + money(risk.sellingIntoTrouble) + ' in open deals</b> while they wait on a request',
+              head: '<b>' + money(openPipeline, pipe && pipe.currency) + ' in open deals</b> while they wait on a request',
               text: 'Open: ' + list(pipe && pipe.openDealNames).join(', ') + '. Nothing here is broken for them — but the answer to the request may decide the deal.',
               items: triageItems.length ? triageItems : subjects }
           : { id: 'selling', sev: 1, title: 'Selling into a problem', src: ['crm', 'support'],
-              head: '<b>' + money(risk.sellingIntoTrouble) + ' in open deals</b> while ' + plural(openCases, 'case is', 'cases are') + ' open',
+              head: '<b>' + money(openPipeline, pipe && pipe.currency) + ' in open deals</b> while ' + plural(openCases, 'case is', 'cases are') + ' open',
               text: 'Open: ' + list(pipe && pipe.openDealNames).join(', ') + '.',
               items: triageItems.length ? triageItems : subjects });
       }
-      if (risk && risk.owingAndWaiting != null) {
+      if (risk && risk.unpaidWhileWaiting != null) {
         var held = (a.withheld || []);
         R.push({ id: 'owing', sev: 1, title: 'Not paying, and waiting on us', src: ['billing', 'support'],
-          head: '<b>' + money(risk.owingAndWaiting, owed && owed.currency) + ' unpaid</b> and ' + plural(openCases, 'case', 'cases') + ' open — possibly one conversation',
+          head: '<b>' + money(owedAmt, owed && owed.currency) + ' unpaid</b> and ' + plural(openCases, 'case', 'cases') + ' open — possibly one conversation',
           text: held.length
             ? 'The case was raised on ' + day(held[0].caseOpenedOn) + ', BEFORE invoice ' + held[0].invoice + ' fell due on ' + day(held[0].dueOn) + '. They had a problem with us before we asked for this money, and still have it. Collections should not call without knowing.'
             : 'Before collections calls, find out whether they are holding payment over the problem.',
@@ -531,7 +535,7 @@
           head: '<b>Support is helping a company the CRM does not track and billing does not invoice</b>',
           text: plural(openCases, 'case') + ' open. Either they are a customer nobody recorded, or support is working for free.', items: subjects });
       }
-      if (risk && risk.billedWithNoOwner) {
+      if (risk && risk.billedButUnknownToCrm) {
         R.push({ id: 'unowned', sev: 2, title: 'Billed, but nobody owns them', src: ['billing', 'crm'],
           head: '<b>The CRM has no record</b> of a customer billing invoices',
           text: (a.billing ? plural(a.billing.invoices, 'invoice') + ' issued' : 'Invoiced') + (rec ? ', ' + money(rec.perPeriod, rec.currency) + ' a period' : '') + ', and no account, owner or deal in the CRM.' });
@@ -542,18 +546,24 @@
           head: '<b>' + plural(risk.highPriorityCases, 'case') + ' marked high priority</b> by the helpdesk',
           text: 'The priority the support team set, as distinct from what the model read in the customer’s words.' });
       }
-      var others = (a.shared || []);
+      var sharedAreas = (a.shared || []);
+      var others = Array.from(new Set([].concat.apply([], sharedAreas.map(function (r) { return list(r.accountKeys); }))))
+        .filter(function (k) { return k !== a.accountKey; });
       if (R.length && others.length) {
-        var areas = Array.from(new Set([].concat.apply([], others.map(function (o) { return list(o.areas); }))))
-          .map(function (x) { return String(x).replace(/^area-/, ''); });
-        var clusterPipe = others.reduce(function (t, o) {
-          var ok = o.accountKey === a.accountKey ? o.otherKey : o.accountKey, p = by[ok] && by[ok].pipeline;
-          return t + (p ? p.openPipeline || 0 : 0);
+        var areas = sharedAreas.map(function (r) { return String(r.area).replace(/^area-/, ''); });
+        /* Pipeline is added only where it is in this account's currency: a total across
+           currencies would be a number of nothing. */
+        var cur = pipe && pipe.currency;
+        var clusterPipe = others.reduce(function (t, ok) {
+          var p = by[ok] && by[ok].pipeline;
+          return t + (p && p.currency === cur ? p.openPipeline || 0 : 0);
         }, openPipeline);
+        var SHOWN = 12;
         R.push({ id: 'shared', sev: 2, title: 'Others have this too', src: ['support'],
           head: '<b>' + plural(others.length, 'other customer has', 'other customers have') + ' a case open in the same area</b>',
-          text: 'Area: ' + areas.join(', ') + '. Together these accounts carry ' + money(clusterPipe) + ' of open pipeline — one unhappy customer, or an incident?',
-          items: others.map(function (o) { return (o.accountKey === a.accountKey ? o.otherAccount : o.account) + ' — ' + list(o.areas).map(function (x) { return String(x).replace(/^area-/, ''); }).join(', '); }) });
+          text: 'Area: ' + areas.join(', ') + '. Together these accounts carry ' + money(clusterPipe, cur) + ' of open pipeline' + (cur ? ' in ' + cur : '') + ' — one unhappy customer, or an incident?',
+          items: others.slice(0, SHOWN).map(function (ok) { return (by[ok] && by[ok].name) || ok; })
+            .concat(others.length > SHOWN ? ['and ' + (others.length - SHOWN) + ' more'] : []) });
       }
       var closeIn = pipe ? daysFromNow(pipe.nextClose) : null;
       /* A SUPPORTING reason. An overdue close date sharpens a card that is already here ("and the
