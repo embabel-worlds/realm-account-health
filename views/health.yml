@@ -91,19 +91,20 @@
            max(c.replyCount) AS longestThread, min(c.openedOn) AS firstOpened
     ORDER BY openCases DESC, longestThread DESC
 
-- name: HealthUrgentCaseCountsByAccount
+- name: HealthHighPriorityCaseCountsByAccount
   description: >-
-    Per account: how many of the open support cases are URGENT or HIGH priority. The escalation
-    signal behind HealthOpenCaseCountsByAccount — an account absent from this list has open cases
-    but none of them urgent.
-  outputLabel: AccountUrgentCaseCountsRow
+    Per account: how many of the open support cases are high priority, meaning priority URGENT or
+    HIGH (the same "highPriority" as HealthOpenCasesByAccount). Not a count of urgent cases alone:
+    for those, filter the cases on priority = 'urgent'. The escalation signal behind
+    HealthOpenCaseCountsByAccount; an account absent from this list has open cases but none high priority.
+  outputLabel: AccountHighPriorityCaseCountsRow
   cypher: |
     MATCH (c:SupportCase)
     WHERE c.status = 'open' AND c.priority IN ['urgent', 'high']
     WITH c, c.accountKey AS domain
     MATCH (a:CustomerAccount {accountKey: domain})
-    RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS urgentCases
-    ORDER BY urgentCases DESC
+    RETURN a.accountKey AS accountKey, a.name AS account, count(c) AS highPriorityCases
+    ORDER BY highPriorityCases DESC
 
 - name: HealthOpenCasesByAccount
   description: >-

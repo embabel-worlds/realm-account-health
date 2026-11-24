@@ -75,7 +75,7 @@ view_known = post("/api/v1/views/HealthKnownAccounts/invoke", {"args": {}})
 print("== the accounts: %s ==" % json.dumps((view_known.get("data") or [{}])[0]))
 
 print("== L1: every view answers by name ==")
-NAMES = ["HealthKnownAccounts", "HealthOpenCaseCountsByAccount", "HealthUrgentCaseCountsByAccount", "HealthOpenCasesByAccount", "HealthResolvedCasesByAccount", "HealthReceivablesByAccount", "HealthBillingByAccount",
+NAMES = ["HealthKnownAccounts", "HealthOpenCaseCountsByAccount", "HealthHighPriorityCaseCountsByAccount", "HealthOpenCasesByAccount", "HealthResolvedCasesByAccount", "HealthReceivablesByAccount", "HealthBillingByAccount",
          "HealthRecurringByAccount", "HealthPipelineByAccount", "HealthCrmRecordByAccount", "HealthCompanyNotesForOpenCases",
          "HealthDealNotesForOpenCases", "HealthContactNotesForOpenCases", "HealthSellingIntoTrouble", "HealthOwingAndWaiting",
          "HealthRevenueBehindCases", "HealthBilledButUnknownToCrm",
@@ -137,8 +137,8 @@ check("won without a subscription: never an account that has one", set(),
       {r["accountKey"] for r in V["ChaserWonWithoutSubscription"]} & set(recur))
 counts = {r["accountKey"]: r["openCases"] for r in V["HealthOpenCaseCountsByAccount"]}
 check("open-case counts = the detail view's counts", {k: r["openCases"] for k, r in cases.items()}, counts)
-check("urgent counts = the detail view's high priority", {k: r["highPriority"] for k, r in cases.items() if r["highPriority"]},
-      {r["accountKey"]: r["urgentCases"] for r in V["HealthUrgentCaseCountsByAccount"]})
+check("high-priority counts = the detail view's high priority", {k: r["highPriority"] for k, r in cases.items() if r["highPriority"]},
+      {r["accountKey"]: r["highPriorityCases"] for r in V["HealthHighPriorityCaseCountsByAccount"]})
 
 print("== L2c: the JUDGEMENTS are stable, and legal ==")
 # A materialised judgement must be the SAME judgement on the next read — that is what it is
