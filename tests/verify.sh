@@ -31,6 +31,56 @@ APPLIANCE="$APPLIANCE" AUTH="$AUTHCFG" python3 - "$DIR/questions.yml" "$DIR/.." 
 import glob, json, os, re, subprocess, sys, yaml
 base, auth, qfile, realm = os.environ["APPLIANCE"], os.environ["AUTH"], sys.argv[1], sys.argv[2]
 fail = 0
+# Whether an answer is the whole truth is the ENGINE's to say, and it says it beside the rows: a
+# query's `error`, `reason` and `warnings` (each opening with its code), a view's `status`,
+# `outcome` and `warnings`. A figure read past them reports a source that failed under load, or a
+# page it capped, as an account the views disagree about. So every answer read here goes through
+# short(): None when whole, else "REFUSED: <why>" or "PARTIAL <figure>: <the engine's reason>".
+# Raw warning codes that mean rows or values may be missing (the engine's incompleteness kinds).
+# Cost notes (FILTERED_IN_GRAPH, AGGREGATE_NOT_PUSHED, EMPTY_NOT_KEPT, PUSHDOWN_VALUE_UNMATCHED),
+# FILTER_STARVED (an honest empty), STALE_COPY, FIELDS_WITHHELD and UNKNOWN_VIA leave every row in place.
+SHORT_CODES = (
+    "PARTIAL_RESULT", "PRODUCER_ERROR", "NEEDS_FILTER", "NEEDS_PRODUCER", "FILTER_REJECTED",
+    "UNPUSHED_FILTER", "AMBIGUOUS_LABEL", "INCOMPLETE_TRAVERSAL", "INCOMPLETE_RANKING",
+    "INCOMPLETE_AGGREGATE", "INCOMPLETE_INPUT", "MATERIALIZATION_FAILED", "REDUCTION_FAILED",
+    "UNPARSEABLE_ANSWER", "TERMS_UNAVAILABLE", "COMPUTE_FAILED", "PROPERTY_NOT_STORED",
+    "FOLLOW_CAPPED", "UNLINKED_CHILDREN", "RESOLUTION_DROPPED", "AGENTIC_DEGRADED",
+    "SOURCE_UNANSWERED",
+)
+# The typed `reason` a query result carries when it is not a clean answer and not an honest empty.
+SHORT_REASONS = ("UNBOUNDED", "PARTIAL_NOT_MATCHED", "UNPUSHED_FILTER", "DISCONNECTED",
+                 "INTERNAL_ERROR", "WRITE_IN_PROGRESS", "KILLED", "TOO_EXPENSIVE")
+# Public warning codes on a view envelope that mean the same.
+SHORT_PUBLIC = ("PARTIAL", "REDUCTION_FAILED", "COMPUTE_FAILED", "PROPERTY_NOT_STORED",
+                "AGENTIC_DEGRADED", "RATE_LIMITED", "SOURCE_UNAVAILABLE", "SOURCE_REJECTED",
+                "INVALID_FILTER", "UNPUSHED_FILTER", "TOO_BROAD", "FETCH_CAPPED",
+                "INDEX_UNAVAILABLE", "ARGUMENT_REFUSED")
+
+
+def short(d, figure=None):
+    tag = "PARTIAL" if figure is None else "PARTIAL %s" % (figure,)
+    if not isinstance(d, dict):
+        return "REFUSED: not an engine answer: " + str(d)[:160]
+    if "outcome" in d or "status" in d:  # a view envelope
+        err = d.get("error") or {}
+        if d.get("status") != "SUCCEEDED":
+            return "REFUSED: %s %s" % (d.get("status"), (err.get("code", "") + " " + err.get("message", "")).strip()[:160] if isinstance(err, dict) else str(err)[:160])
+        ws = [w for w in d.get("warnings") or [] if isinstance(w, dict) and w.get("code") in SHORT_PUBLIC]
+        if d.get("outcome") not in ("OK", "EMPTY") or ws:
+            why = ws[0]["code"] + ": " + ws[0].get("message", "") if ws else "outcome " + str(d.get("outcome"))
+            return "%s: %s" % (tag, why[:200])
+        return None
+    if d.get("error"):
+        return "REFUSED: " + str(d["error"])[:160]
+    if d.get("run"):
+        return "%s: the run had not finished (%s)" % (tag, d["run"])
+    ws = [w for w in d.get("warnings") or [] if isinstance(w, str) and w.split(":", 1)[0].strip() in SHORT_CODES]
+    if ws:
+        return "%s: %s" % (tag, ws[0][:200])
+    if d.get("reason") in SHORT_REASONS:
+        return "%s: reason %s" % (tag, d["reason"])
+    return None
+
 def post(path, body):
     out = subprocess.run(["curl", "-s", "-K", auth, "-X", "POST", base + path, "-H", "Content-Type: application/json",
                           "-d", json.dumps(body)], capture_output=True, text=True).stdout
@@ -41,6 +91,10 @@ def invoke(name, args=None):
         # The envelope's error says WHY (TOO_EXPENSIVE, BUDGET_EXCEEDED, a fetch cap): a bare FAILED
         # sent the last reader of this battery to the server log to find out.
         raise SystemExit("view %s %s: %s %s" % (name, args or "", v.get("status"), json.dumps(v.get("error"))))
+    # A short view stops the battery as a failed one does: every check below compares views with
+    # each other, and one that is missing rows makes its neighbours disagree, or agree, for nothing.
+    s = short(v, len(v.get("data") or []))
+    if s: raise SystemExit("view %s %s: %s" % (name, args or "", s))
     return v
 def view(name, args=None): return invoke(name, args).get("data") or []
 def check(name, want, got):
@@ -133,12 +187,12 @@ print("== L2a: one account is asked of the helpdesk alone, and agrees with the b
 # through HealthCasesForAccount, which must not need the book to say so.
 if cases:
     top = sorted(cases.values(), key=lambda r: (-r["openCases"], r["accountKey"]))[0]["accountKey"]
-    one = post("/api/v1/views/HealthCasesForAccount/invoke", {"args": {"accountKey": top, "status": "open"}}).get("data") or []
+    one = view("HealthCasesForAccount", {"accountKey": top, "status": "open"})
     check("one account's open cases, %s" % top, cases[top]["openCases"], len(one))
     check("  ...and the same case ids", sorted(cases[top]["caseIds"]), sorted(r["caseId"] for r in one))
     resolved = {r["accountKey"]: r for r in V["HealthResolvedCasesByAccount"]}
     if top in resolved:
-        one = post("/api/v1/views/HealthCasesForAccount/invoke", {"args": {"accountKey": top, "status": "resolved"}}).get("data") or []
+        one = view("HealthCasesForAccount", {"accountKey": top, "status": "resolved"})
         check("one account's resolved cases, %s" % top, resolved[top]["resolvedCases"], len(one))
 
 print("== L2b: the RULES conclude what the facts say ==")
@@ -238,11 +292,17 @@ def figure(rows, column):
 for case in yaml.safe_load(open(qfile)):
     q, exp = case["question"], case["expect"]
     if exp.get("declines"):
-        counts = [len(post("/api/v1/admin/kg/ask", {"question": q}).get("rows") or []) for _ in range(exp.get("times", 3))]
+        # A refusal is a decline; a PARTIAL answer is not, since its empty may be a source that failed.
+        def declined_rows(a):
+            s = short(a)
+            return s if s and s.startswith("PARTIAL") else len(a.get("rows") or [])
+        counts = [declined_rows(post("/api/v1/admin/kg/ask", {"question": q})) for _ in range(exp.get("times", 3))]
         ok = all(c == 0 for c in counts)
         print(("  ok   " if ok else "  FAIL ") + "[cannot answer] " + q + " -> rows per run " + str(counts))
         fail |= (not ok); continue
     a = post("/api/v1/admin/kg/ask", {"question": q}); rows = a.get("rows") or []; ok = True; said = []
+    if short(a, len(rows)):
+        ok = False; said.append(short(a, len(rows)))
     if "matchesView" in exp:
         mv = exp["matchesView"]; want, got = figure(V[mv["name"]], mv["column"]), figure(rows, mv["column"])
         ok &= want is not None and want == got; said.append("%s=%s (view %s)" % (mv["column"], got, want))
@@ -280,6 +340,7 @@ Priya Raman, Head of Finance"""
     res = view_with("HealthWhatThisEmailRaises", {"email": EMAIL})
     rows = res.get("data") or []
     check("email view answered", "SUCCEEDED", res.get("status"))
+    check("email view answered whole", None, short(res, len(rows)))
     check("issues projected from the email", True, len(rows) >= 2)
     check("every issue resolved to %s" % KEY, [KEY] * len(rows), [r.get("accountKey") for r in rows])
     check("severities stay in the declared set", True, all(r.get("severity") in ("high", "medium", "low") for r in rows))
@@ -292,6 +353,7 @@ Priya Raman, Head of Finance"""
     # A personal address must come back DECLINED — said, not just an empty account column.
     gmail = view_with("HealthWhatThisEmailRaises", {"email": EMAIL.replace("priya.raman@northwind-traders.example", "priya.raman@gmail.com")})
     grows = gmail.get("data") or []
+    check("gmail view answered whole", None, short(gmail, len(grows)))
     check("a gmail sender resolves to no account", [None] * len(grows), [r.get("accountKey") for r in grows])
     told = json.dumps({k: v for k, v in gmail.items() if k != "data"}).lower()
     # A personal address can end two honest ways: the model names the company and the account
