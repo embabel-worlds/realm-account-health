@@ -31,55 +31,10 @@ APPLIANCE="$APPLIANCE" AUTH="$AUTHCFG" python3 - "$DIR/questions.yml" "$DIR/.." 
 import glob, json, os, re, subprocess, sys, yaml
 base, auth, qfile, realm = os.environ["APPLIANCE"], os.environ["AUTH"], sys.argv[1], sys.argv[2]
 fail = 0
-# Whether an answer is the whole truth is the ENGINE's to say, and it says it beside the rows: a
-# query's `error`, `reason` and `warnings` (each opening with its code), a view's `status`,
-# `outcome` and `warnings`. A figure read past them reports a source that failed under load, or a
-# page it capped, as an account the views disagree about. So every answer read here goes through
-# short(): None when whole, else "REFUSED: <why>" or "PARTIAL <figure>: <the engine's reason>".
-# Raw warning codes that mean rows or values may be missing (the engine's incompleteness kinds).
-# Cost notes (FILTERED_IN_GRAPH, AGGREGATE_NOT_PUSHED, EMPTY_NOT_KEPT, PUSHDOWN_VALUE_UNMATCHED),
-# FILTER_STARVED (an honest empty), STALE_COPY, FIELDS_WITHHELD and UNKNOWN_VIA leave every row in place.
-SHORT_CODES = (
-    "PARTIAL_RESULT", "PRODUCER_ERROR", "NEEDS_FILTER", "NEEDS_PRODUCER", "FILTER_REJECTED",
-    "UNPUSHED_FILTER", "AMBIGUOUS_LABEL", "INCOMPLETE_TRAVERSAL", "INCOMPLETE_RANKING",
-    "INCOMPLETE_AGGREGATE", "INCOMPLETE_INPUT", "MATERIALIZATION_FAILED", "REDUCTION_FAILED",
-    "UNPARSEABLE_ANSWER", "TERMS_UNAVAILABLE", "COMPUTE_FAILED", "PROPERTY_NOT_STORED",
-    "FOLLOW_CAPPED", "UNLINKED_CHILDREN", "RESOLUTION_DROPPED", "AGENTIC_DEGRADED",
-    "SOURCE_UNANSWERED",
-)
-# The typed `reason` a query result carries when it is not a clean answer and not an honest empty.
-SHORT_REASONS = ("UNBOUNDED", "PARTIAL_NOT_MATCHED", "UNPUSHED_FILTER", "DISCONNECTED",
-                 "INTERNAL_ERROR", "WRITE_IN_PROGRESS", "KILLED", "TOO_EXPENSIVE")
-# Public warning codes on a view envelope that mean the same.
-SHORT_PUBLIC = ("PARTIAL", "REDUCTION_FAILED", "COMPUTE_FAILED", "PROPERTY_NOT_STORED",
-                "AGENTIC_DEGRADED", "RATE_LIMITED", "SOURCE_UNAVAILABLE", "SOURCE_REJECTED",
-                "INVALID_FILTER", "UNPUSHED_FILTER", "TOO_BROAD", "FETCH_CAPPED",
-                "INDEX_UNAVAILABLE", "ARGUMENT_REFUSED")
-
-
-def short(d, figure=None):
-    tag = "PARTIAL" if figure is None else "PARTIAL %s" % (figure,)
-    if not isinstance(d, dict):
-        return "REFUSED: not an engine answer: " + str(d)[:160]
-    if "outcome" in d or "status" in d:  # a view envelope
-        err = d.get("error") or {}
-        if d.get("status") != "SUCCEEDED":
-            return "REFUSED: %s %s" % (d.get("status"), (err.get("code", "") + " " + err.get("message", "")).strip()[:160] if isinstance(err, dict) else str(err)[:160])
-        ws = [w for w in d.get("warnings") or [] if isinstance(w, dict) and w.get("code") in SHORT_PUBLIC]
-        if d.get("outcome") not in ("OK", "EMPTY") or ws:
-            why = ws[0]["code"] + ": " + ws[0].get("message", "") if ws else "outcome " + str(d.get("outcome"))
-            return "%s: %s" % (tag, why[:200])
-        return None
-    if d.get("error"):
-        return "REFUSED: " + str(d["error"])[:160]
-    if d.get("run"):
-        return "%s: the run had not finished (%s)" % (tag, d["run"])
-    ws = [w for w in d.get("warnings") or [] if isinstance(w, str) and w.split(":", 1)[0].strip() in SHORT_CODES]
-    if ws:
-        return "%s: %s" % (tag, ws[0][:200])
-    if d.get("reason") in SHORT_REASONS:
-        return "%s: reason %s" % (tag, d["reason"])
-    return None
+# Whether an answer is the whole truth is the ENGINE's to say, and it says it beside the rows. Every
+# answer read here goes through short() from the battery library (tests/lib, pinned from
+# realm-spec): None when whole, else "REFUSED: <why>" or "PARTIAL <figure>: <the engine's reason>".
+exec(open(os.path.join(realm, "tests", "lib", "short.py")).read())
 
 def post(path, body):
     out = subprocess.run(["curl", "-s", "-K", auth, "-X", "POST", base + path, "-H", "Content-Type: application/json",
@@ -292,8 +247,12 @@ def figure(rows, column):
 for case in yaml.safe_load(open(qfile)):
     q, exp = case["question"], case["expect"]
     if exp.get("declines"):
-        # A refusal is a decline; a PARTIAL answer is not, since its empty may be a source that failed.
+        # A refusal is a decline; a PARTIAL answer is not, since its empty may be a source that failed,
+        # and neither is a server error, which answers nothing either way (its body carries an HTTP
+        # `status` and `error`, so it reads as REFUSED).
         def declined_rows(a):
+            if isinstance(a.get("status"), int) and a["status"] >= 500:
+                return "HTTP %d %s" % (a["status"], a.get("error") or "")
             s = short(a)
             return s if s and s.startswith("PARTIAL") else len(a.get("rows") or [])
         counts = [declined_rows(post("/api/v1/admin/kg/ask", {"question": q})) for _ in range(exp.get("times", 3))]
