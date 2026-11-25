@@ -247,8 +247,12 @@ def figure(rows, column):
 for case in yaml.safe_load(open(qfile)):
     q, exp = case["question"], case["expect"]
     if exp.get("declines"):
-        # A refusal is a decline; a PARTIAL answer is not, since its empty may be a source that failed.
+        # A refusal is a decline; a PARTIAL answer is not, since its empty may be a source that failed,
+        # and neither is a server error, which answers nothing either way (its body carries an HTTP
+        # `status` and `error`, so it reads as REFUSED).
         def declined_rows(a):
+            if isinstance(a.get("status"), int) and a["status"] >= 500:
+                return "HTTP %d %s" % (a["status"], a.get("error") or "")
             s = short(a)
             return s if s and s.startswith("PARTIAL") else len(a.get("rows") or [])
         counts = [declined_rows(post("/api/v1/admin/kg/ask", {"question": q})) for _ in range(exp.get("times", 3))]
