@@ -6,7 +6,7 @@ description: >-
   written against the vocabulary's types, edges and properties and joins on the CustomerAccount
   spine, so the same answers come from whichever CRM, helpdesk and billing system the world has.
   Nothing is stored: each answer is read from the three systems when it is asked for.
-version: 0.2.1
+version: 0.2.2
 # The views reconcile and the app works; rules and the question battery are still to come.
 maturity: experimental
 author: Rod Johnson
